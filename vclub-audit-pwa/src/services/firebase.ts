@@ -97,16 +97,26 @@ export const SEED_MOCK_READINGS: MachineRecord[] = [
   },
 ];
 
+export const DEFAULT_FIREBASE_CONFIG: FirebaseConfig = {
+  apiKey: 'AIzaSyAzl4-DoTSypfTwbXbSJHMuoaamvfWb5q4',
+  authDomain: 'scanner-app-67176.firebaseapp.com',
+  projectId: 'scanner-app-67176',
+  databaseURL: 'https://scanner-app-67176-default-rtdb.asia-southeast1.firebasedatabase.app',
+  storageBucket: 'scanner-app-67176.firebasestorage.app',
+  messagingSenderId: '484857526973',
+  appId: '1:484857526973:web:f515d2967e1473066a55d4',
+};
+
 /**
- * Đọc cấu hình Firebase từ localStorage
+ * Đọc cấu hình Firebase từ localStorage (mặc định lấy cấu hình của dự án)
  */
-export function getSavedFirebaseConfig(): FirebaseConfig | null {
+export function getSavedFirebaseConfig(): FirebaseConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_CONFIG);
-    if (!raw) return null;
+    if (!raw) return DEFAULT_FIREBASE_CONFIG;
     return JSON.parse(raw);
   } catch {
-    return null;
+    return DEFAULT_FIREBASE_CONFIG;
   }
 }
 
