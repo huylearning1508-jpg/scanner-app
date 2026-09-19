@@ -212,8 +212,8 @@ export function extractLines(
   height: number,
   scaleFactor = 1.0
 ): Rect[] {
-  // Tính tổng số pixel đen trên mỗi hàng
-  const hpp = new Int32Array(height);
+  // 1. Tính tổng số pixel đen trên mỗi hàng
+  const hpp = new Float32Array(height);
   for (let y = 0; y < height; y++) {
     const offset = y * width;
     let count = 0;
@@ -223,16 +223,40 @@ export function extractLines(
     hpp[y] = count;
   }
 
-  const minLineH = Math.max(8, Math.floor(12 * scaleFactor));
-  const minTextPix = Math.max(3, Math.floor(5 * scaleFactor));
+  // 2. Làm mượt HPP bằng bộ lọc 1D trung bình động 5 pixel để loại bỏ nhiễu răng cưa
+  const smoothed = new Float32Array(height);
+  for (let y = 0; y < height; y++) {
+    let sum = 0;
+    let cnt = 0;
+    for (let dy = -2; dy <= 2; dy++) {
+      const ny = y + dy;
+      if (ny >= 0 && ny < height) {
+        sum += hpp[ny];
+        cnt++;
+      }
+    }
+    smoothed[y] = sum / (cnt || 1);
+  }
 
-  // Dò các dải Y chứa chữ
+  // 3. Tính ngưỡng động theo phân vị (percentile) thay vì cố định minTextPix = 5
+  // Giúp phát hiện rãnh ngắt dòng (valleys) ngay cả khi có ánh sáng phản chiếu hoặc dither
+  const sorted = Array.from(smoothed).sort((a, b) => a - b);
+  const p25 = sorted[Math.floor(height * 0.25)] || 0;
+  const p75 = sorted[Math.floor(height * 0.75)] || 0;
+  const maxVal = sorted[height - 1] || 0;
+
+  if (maxVal < 8) return [];
+
+  // Ngưỡng tách dòng: vượt lên trên thung lũng (valleys) giữa các dòng
+  const thresh = Math.max(10, p25 + (p75 - p25) * 0.2);
+
+  const minLineH = Math.max(6, Math.floor(8 * scaleFactor));
   const lineBands: { y1: number; y2: number }[] = [];
   let inLine = false;
   let startY = 0;
 
   for (let y = 0; y < height; y++) {
-    if (hpp[y] >= minTextPix) {
+    if (smoothed[y] >= thresh) {
       if (!inLine) {
         inLine = true;
         startY = y;
@@ -250,9 +274,9 @@ export function extractLines(
     lineBands.push({ y1: startY, y2: height });
   }
 
-  // Với mỗi dải Y, dò biên độ X trái - phải
+  // 4. Với mỗi dải Y, dò biên độ X trái - phải (loại trừ các hạt biên sát mép)
   const lines: Rect[] = [];
-  const pad = Math.max(2, Math.floor(4 * scaleFactor));
+  const pad = Math.max(2, Math.floor(3 * scaleFactor));
 
   for (const band of lineBands) {
     let minX = width;
@@ -268,7 +292,7 @@ export function extractLines(
       }
     }
 
-    if (maxX > minX && maxX - minX > Math.floor(15 * scaleFactor)) {
+    if (maxX > minX && maxX - minX > Math.floor(12 * scaleFactor)) {
       const x0 = Math.max(0, minX - pad);
       const y0 = Math.max(0, band.y1 - pad);
       const x1 = Math.min(width, maxX + pad + 1);

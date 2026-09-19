@@ -1,5 +1,5 @@
-// Service Worker for V Club Audit Scanner PWA
-const CACHE_NAME = 'vclub-audit-v1';
+// Service Worker for V Club Audit Scanner PWA (v3)
+const CACHE_NAME = 'vclub-audit-v3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -29,6 +29,7 @@ self.addEventListener('activate', (event) => {
       Promise.all(
         keys.map((key) => {
           if (key !== CACHE_NAME) {
+            console.log('[SW] Deleting old cache:', key);
             return caches.delete(key);
           }
         })
@@ -44,6 +45,21 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Network-First cho tài liệu HTML để luôn cập nhật giao diện mới nhất
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          return response;
+        })
+        .catch(() => caches.match('/index.html'))
+    );
+    return;
+  }
+
+  // Cache-First cho các file tĩnh (.js, .css, .onnx, .wasm)
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) {
