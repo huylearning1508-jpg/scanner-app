@@ -117,12 +117,19 @@ function softmax(logits: Float32Array | number[]): number[] {
   return probs;
 }
 
+export interface CharPrediction {
+  char: string;
+  confidence: number;
+  classId: number;
+  candidates: { char: string; confidence: number }[];
+}
+
 /**
  * Batch inference cho danh sách các tensor ký tự 64x64
  */
 export async function predictBatch(
   charTensors: Float32Array[]
-): Promise<{ char: string; confidence: number; classId: number }[]> {
+): Promise<CharPrediction[]> {
   const sess = await loadOcrSession();
   const N = charTensors.length;
   if (N === 0) return [];
@@ -141,26 +148,22 @@ export async function predictBatch(
   const outputTensor = results[sess.outputNames[0] || 'output'];
   const outputData = outputTensor.data as Float32Array;
 
-  const predictions: { char: string; confidence: number; classId: number }[] = [];
+  const predictions: CharPrediction[] = [];
   const numClasses = OCR_LABELS.length; // 13
 
   for (let i = 0; i < N; i++) {
     const logits = outputData.subarray(i * numClasses, (i + 1) * numClasses);
     const probs = softmax(logits);
 
-    let topId = 0;
-    let maxProb = probs[0];
-    for (let c = 1; c < numClasses; c++) {
-      if (probs[c] > maxProb) {
-        maxProb = probs[c];
-        topId = c;
-      }
-    }
+    const candidates = probs
+      .map((p, idx) => ({ char: OCR_LABELS[idx] || '?', confidence: p }))
+      .sort((a, b) => b.confidence - a.confidence);
 
     predictions.push({
-      char: OCR_LABELS[topId] || '?',
-      confidence: maxProb,
-      classId: topId,
+      char: candidates[0].char,
+      confidence: candidates[0].confidence,
+      classId: OCR_LABELS.indexOf(candidates[0].char),
+      candidates,
     });
   }
 
@@ -168,7 +171,7 @@ export async function predictBatch(
 }
 
 /**
- * Nhận diện toàn bộ ký tự trong 1 dòng văn bản
+ * Nhận diện toàn bộ ký tự trong 1 dòng văn bản với ngữ pháp ràng buộc (Grammar-aware)
  */
 export async function recognizeLine(
   cleanBinary: Uint8Array,
@@ -192,20 +195,56 @@ export async function recognizeLine(
 
   const charBoxes: CharBox[] = [];
   let lineText = '';
+  const N = preds.length;
 
-  for (let i = 0; i < preds.length; i++) {
+  // Kiểm tra nếu là dòng số nguyên ngắn (vd: Số máy 1..3 chữ số không có dấu chấm '.')
+  const hasDot = preds.some((p) => p.char === '.');
+  const isShortInteger = N <= 3 && !hasDot;
+
+  for (let i = 0; i < N; i++) {
     const p = preds[i];
     const crop = charCrops[i];
+    const isFirst = i === 0;
+    const isLast = i === N - 1;
+
+    let chosenChar = p.char;
+    let chosenConf = p.confidence;
+
+    if (isShortInteger) {
+      // Trong dòng số nguyên (Số máy), BẮT BUỘC là chữ số 0-9, không bao giờ là % hay $
+      const digitCand = p.candidates.find((c) => /^[0-9]$/.test(c.char));
+      if (digitCand) {
+        chosenChar = digitCand.char;
+        chosenConf = digitCand.confidence;
+      }
+    } else {
+      // '$' chỉ được phép đứng đầu dòng (Mệnh giá $0.01)
+      if (chosenChar === '$' && !isFirst) {
+        const alt = p.candidates.find((c) => c.char !== '$');
+        if (alt) {
+          chosenChar = alt.char;
+          chosenConf = alt.confidence;
+        }
+      }
+      // '%' chỉ được phép đứng cuối dòng (RTP 92.827%)
+      if (chosenChar === '%' && !isLast) {
+        const alt = p.candidates.find((c) => c.char !== '%');
+        if (alt) {
+          chosenChar = alt.char;
+          chosenConf = alt.confidence;
+        }
+      }
+    }
 
     charBoxes.push({
-      char: p.char,
-      confidence: p.confidence,
+      char: chosenChar,
+      confidence: chosenConf,
       x: crop.box.x,
       y: crop.box.y,
       w: crop.box.w,
       h: crop.box.h,
     });
-    lineText += p.char;
+    lineText += chosenChar;
   }
 
   return {

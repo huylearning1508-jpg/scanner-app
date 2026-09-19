@@ -132,8 +132,9 @@ export function extractAuditFields(lines: DetectedLine[]): AuditFieldResult {
 
   for (let i = rtpSearchStart; i >= 0; i--) {
     const txt = lines[i].text;
-    // Dòng RTP thường có chứa '%' hoặc có dạng số thập phân
-    if (txt.includes('%') || (txt.includes('.') && txt.replace(/[^\d]/g, '').length >= 3)) {
+    const parsed = parseRtpString(txt);
+    // RTP máy slot LUÔN nằm trong dải [75%, 100%] (loại trừ hoàn toàn các dòng Game Type / Progressive 0.000%)
+    if (parsed.value !== null && parsed.value >= 75 && parsed.value <= 100) {
       rtpCandidates.push({ line: lines[i], idx: i });
       if (rtpCandidates.length === 2) break;
     }

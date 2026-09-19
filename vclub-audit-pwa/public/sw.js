@@ -1,5 +1,5 @@
-// Service Worker for V Club Audit Scanner PWA (v3)
-const CACHE_NAME = 'vclub-audit-v3';
+// Service Worker for V Club Audit Scanner PWA (v4)
+const CACHE_NAME = 'vclub-audit-v4';
 const STATIC_ASSETS = [
   '/',
   '/index.html',

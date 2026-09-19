@@ -297,8 +297,8 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
     }
     const isDarkBg = borderSum / Math.max(1, borderCount) < 110;
 
-    // B2.1: Adaptive Threshold (blockSize=21, C=10)
-    let binary = adaptiveThreshold(gray, targetW, targetH, 21, 10);
+    // B2.1: Adaptive Threshold (blockSize=21, C=6) để giữ lại cả nét chữ mờ trên màn LCD
+    let binary = adaptiveThreshold(gray, targetW, targetH, 21, 6);
     if (isDarkBg) {
       // Đảo ngược thành chữ đen (0) trên nền trắng (255)
       for (let i = 0; i < binary.length; i++) {
