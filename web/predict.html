@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Đọc số từ màn hình qua camera</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tensorflow/4.20.0/tf.min.js"></script>
+<style>
+  html, body { margin:0; padding:0; background:#111; color:#eee; font-family:system-ui,sans-serif; height:100%; }
+  #wrap { position:relative; width:100%; max-width:480px; margin:0 auto; touch-action:none; }
+  video, #overlayCanvas { display:block; width:100%; }
+  #overlayCanvas { position:absolute; top:0; left:0; }
+  #roi {
+    position:absolute; border:2px solid #00e5ff; box-shadow:0 0 0 2000px rgba(0,0,0,.45);
+    cursor:move; touch-action:none;
+  }
+  #panel { max-width:480px; margin:10px auto; padding:0 12px; }
+  #result { font-size:32px; font-weight:bold; letter-spacing:2px; text-align:center;
+             background:#000; color:#00ff6a; padding:14px; border-radius:8px; margin-top:8px;
+             font-family:monospace; min-height:1.4em; }
+  .row { display:flex; align-items:center; gap:8px; margin:6px 0; font-size:14px; }
+  input[type=range] { flex:1; }
+  #status { font-size:12px; opacity:.7; text-align:center; margin-top:4px; }
+</style>
+</head>
+<body>
+
+<div id="wrap">
+  <video id="video" autoplay playsinline muted></video>
+  <div id="roi"></div>
+</div>
+
+<div id="panel">
+  <div class="row"><label style="width:90px">Độ rộng khung</label>
+    <input id="scale" type="range" min="0.2" max="0.95" step="0.01" value="0.6"></div>
+  <div id="result">—</div>
+  <div id="status">Đang tải model...</div>
+</div>
+
+<canvas id="cropCanvas" style="display:none"></canvas>
+
+<script>
+const video = document.getElementById('video');
+const roi = document.getElementById('roi');
+const wrap = document.getElementById('wrap');
+const scaleSlider = document.getElementById('scale');
+const resultEl = document.getElementById('result');
+const statusEl = document.getElementById('status');
+const cropCanvas = document.getElementById('cropCanvas');
+
+// ==== 1. Cấu hình ROI (vùng chứa số) — kéo để đặt đúng vị trí số trên màn hình ====
+let roiPos = { x: 0.2, y: 0.4 };  // tỉ lệ (0..1) so với khung video, góc trên-trái của ROI
+let roiScale = parseFloat(scaleSlider.value); // tỉ lệ chiều rộng ROI so với video
+
+let meta = null;   // nội dung labels.json (charset, num_slots, img_width/height...)
+let model = null;
+
+function layoutRoi() {
+  const vw = wrap.clientWidth, vh = wrap.clientHeight;
+  if (!meta) return;
+  const roiW = vw * roiScale;
+  const roiH = roiW * (meta.img_height / meta.img_width); // giữ đúng tỉ lệ khung đã train
+  const x = roiPos.x * vw, y = roiPos.y * vh;
+  roi.style.left = x + 'px';
+  roi.style.top = y + 'px';
+  roi.style.width = roiW + 'px';
+  roi.style.height = roiH + 'px';
+}
+
+// kéo ROI bằng chuột/ngón tay
+let dragging = false, dragStart = null;
+roi.addEventListener('pointerdown', e => {
+  dragging = true;
+  dragStart = { px: e.clientX, py: e.clientY, x: roiPos.x, y: roiPos.y };
+  roi.setPointerCapture(e.pointerId);
+});
+roi.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const vw = wrap.clientWidth, vh = wrap.clientHeight;
+  roiPos.x = Math.min(1 - roiScale, Math.max(0, dragStart.x + (e.clientX - dragStart.px) / vw));
+  roiPos.y = Math.min(1, Math.max(0, dragStart.y + (e.clientY - dragStart.py) / vh));
+  layoutRoi();
+});
+roi.addEventListener('pointerup', () => dragging = false);
+scaleSlider.addEventListener('input', () => { roiScale = parseFloat(scaleSlider.value); layoutRoi(); });
+window.addEventListener('resize', layoutRoi);
+
+// ==== 2. Mở camera (ưu tiên camera sau) ====
+async function startCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+    audio: false,
+  });
+  video.srcObject = stream;
+  await new Promise(r => video.onloadedmetadata = r);
+  layoutRoi();
+}
+
+// ==== 3. Load model + metadata (charset, format...) ====
+async function loadModel() {
+  meta = await (await fetch('./tfjs_model/labels.json')).json();
+  model = await tf.loadLayersModel('./tfjs_model/model.json');
+  // "làm nóng" model 1 lần cho lần predict đầu tiên khỏi bị lag
+  const warm = tf.zeros([1, meta.img_height, meta.img_width, 1]);
+  const out = model.predict(warm);
+  (Array.isArray(out) ? out : [out]).forEach(t => t.dispose());
+  warm.dispose();
+}
+
+// ==== 4. Crop đúng vùng ROI từ video hiện tại, chuyển grayscale + resize đúng kích thước train ====
+function captureRoiTensor() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  // roiPos/roiScale là tỉ lệ theo khung HIỂN THỊ (CSS) -> quy đổi sang tọa độ pixel THẬT của video
+  const sx = roiPos.x * vw, sy = roiPos.y * vh;
+  const sw = roiScale * vw, sh = sw * (meta.img_height / meta.img_width);
+
+  cropCanvas.width = meta.img_width;
+  cropCanvas.height = meta.img_height;
+  const ctx = cropCanvas.getContext('2d');
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, meta.img_width, meta.img_height);
+
+  return tf.tidy(() => {
+    const rgb = tf.browser.fromPixels(cropCanvas); // [H,W,3], giá trị 0..255
+    // chuyển sang grayscale giống HỆT công thức PIL .convert('L') dùng lúc sinh dữ liệu train
+    // (Không khớp công thức này là lỗi phổ biến nhất khiến model đúng lúc train nhưng sai lúc infer)
+    const weights = tf.tensor1d([0.299, 0.587, 0.114]);
+    const gray = rgb.toFloat().mul(weights).sum(-1).expandDims(-1); // [H,W,1], 0..255
+    return gray.expandDims(0); // [1,H,W,1]
+  });
+}
+
+// ==== 5. Giải mã output model (mỗi head 1 vector softmax) thành chuỗi số ====
+function decode(outputs) {
+  const chars = outputs.map(t => {
+    const idx = t.argMax(-1).dataSync()[0];
+    return idx === meta.blank_index ? '' : meta.charset[idx];
+  });
+  return chars.join('');
+}
+
+// ==== 6. Vòng lặp đọc liên tục ====
+async function loop() {
+  if (model && meta && video.readyState >= 2) {
+    const input = captureRoiTensor();
+    const outputs = model.predict(input);
+    const arr = Array.isArray(outputs) ? outputs : [outputs];
+    const text = decode(arr);
+    input.dispose();
+    arr.forEach(t => t.dispose());
+    resultEl.textContent = text.trim() === '' ? '(không đọc được)' : text;
+  }
+  requestAnimationFrame(loop);
+}
+
+(async () => {
+  try {
+    statusEl.textContent = 'Đang mở camera...';
+    await startCamera();
+    statusEl.textContent = 'Đang tải model...';
+    await loadModel();
+    statusEl.textContent = 'Sẵn sàng — kéo khung xanh vào đúng vị trí số trên màn hình';
+    loop();
+  } catch (e) {
+    statusEl.textContent = 'Lỗi: ' + e.message;
+    console.error(e);
+  }
+})();
+</script>
+</body>
+</html>

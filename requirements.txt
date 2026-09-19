@@ -1,0 +1,5 @@
+# Môi trường để SINH DỮ LIỆU + TRAIN (không phải môi trường export, xem export_tfjs.sh)
+tensorflow==2.16.1
+pillow
+numpy
+opencv-python

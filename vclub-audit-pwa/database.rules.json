@@ -1,0 +1,19 @@
+{
+  "rules": {
+    "machines": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "$machine_id": {
+        ".validate": "newData.hasChildren(['last_audit', 'updated_at'])"
+      }
+    },
+    "field_readings": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": ["machine_no", "week_number", "confirmed_at"],
+      "$capture_id": {
+        ".validate": "newData.hasChildren(['machine_no', 'rtp1', 'rtp2', 'ram_clear_date', 'confirmed_at'])"
+      }
+    }
+  }
+}
