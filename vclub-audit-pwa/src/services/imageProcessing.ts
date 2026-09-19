@@ -368,16 +368,20 @@ export function extractCharactersFromLine(
     }
   }
 
-  // Hợp nhất các cụm quá sát nhau (max_gap <= 2px)
+  // Hợp nhất chỉ khi một trong 2 cụm là mảnh nét đứt của ký tự đặc biệt (như $, %)
+  // Tuyệt đối KHÔNG hợp nhất 2 chữ số đứng sát nhau thành một ô
   const merged: Rect[] = [];
-  const maxGap = Math.max(2, Math.floor(2 * scaleFactor));
+  const maxGap = Math.max(1, Math.floor(1.5 * scaleFactor));
 
   for (const b of rawBoxes) {
     if (merged.length === 0) {
       merged.push(b);
     } else {
       const prev = merged[merged.length - 1];
-      if (b.x <= prev.x + prev.w + maxGap) {
+      const gap = b.x - (prev.x + prev.w);
+      const isFragment = prev.h < lh * 0.35 || b.h < lh * 0.35 || (prev.w + b.w <= lh * 0.65);
+
+      if (gap <= maxGap && isFragment) {
         const nx = prev.x;
         const ny = Math.min(prev.y, b.y);
         const nw = Math.max(prev.x + prev.w, b.x + b.w) - nx;

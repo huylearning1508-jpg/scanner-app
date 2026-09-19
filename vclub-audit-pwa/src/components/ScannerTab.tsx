@@ -61,6 +61,7 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const freezeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const viewfinderRef = useRef<HTMLDivElement | null>(null);
 
   // Trạng thái Camera
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -235,6 +236,7 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
   };
 
   // 2. Chụp và xử lý 1 khung hình từ video
+  // 2. Chụp và xử lý 1 khung hình từ video (ưu tiên vùng trong khung ngắm Viewfinder)
   const processCurrentFrame = async (): Promise<AuditFieldResult | null> => {
     if (!videoRef.current || !canvasRef.current || videoRef.current.readyState < 2) {
       return null;
@@ -247,29 +249,68 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
 
     if (vw <= 0 || vh <= 0) return null;
 
-    // Giới hạn độ phân giải xử lý vừa đủ (~960x540) để pipeline chạy cực mượt 60fps trên di động
-    const targetW = Math.min(vw, 960);
-    const targetH = Math.round((vh * targetW) / vw);
+    // Tính toán ROI từ khung ngắm Viewfinder trên giao diện
+    let sx = 0, sy = 0, sw = vw, sh = vh;
+    if (viewfinderRef.current) {
+      const vRect = video.getBoundingClientRect();
+      const fRect = viewfinderRef.current.getBoundingClientRect();
+      if (vRect.width > 0 && vRect.height > 0) {
+        const scaleX = vw / vRect.width;
+        const scaleY = vh / vRect.height;
+        sx = Math.max(0, Math.round((fRect.left - vRect.left) * scaleX));
+        sy = Math.max(0, Math.round((fRect.top - vRect.top) * scaleY));
+        sw = Math.min(vw - sx, Math.round(fRect.width * scaleX));
+        sh = Math.min(vh - sy, Math.round(fRect.height * scaleY));
+      }
+    } else {
+      // Mặc định tập trung 85% chiều ngang và 65% chiều cao ở giữa màn hình
+      sw = Math.round(vw * 0.85);
+      sh = Math.round(vh * 0.65);
+      sx = Math.round((vw - sw) / 2);
+      sy = Math.round((vh - sh) / 2);
+    }
+
+    if (sw <= 20 || sh <= 20) return null;
+
+    // Giới hạn chiều rộng ROI tối đa 800px để xử lý nhanh và sắc nét
+    const targetW = Math.min(sw, 800);
+    const targetH = Math.round((sh * targetW) / sw);
 
     canvas.width = targetW;
     canvas.height = targetH;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
 
-    ctx.drawImage(video, 0, 0, targetW, targetH);
+    // Vẽ đúng vùng khung ngắm vào canvas xử lý
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, targetW, targetH);
     const imageData = ctx.getImageData(0, 0, targetW, targetH);
 
     // B1: Grayscale
     const gray = toGrayscale(imageData);
 
-    // B2: Adaptive Threshold (blockSize=21, C=12)
-    const binary = adaptiveThreshold(gray, targetW, targetH, 21, 12);
+    // B2: Tự động nhận diện độ sáng viền để xử lý cả màn sáng chữ tối lẫn màn tối chữ sáng
+    let borderSum = 0;
+    let borderCount = 0;
+    for (let x = 0; x < targetW; x += 8) {
+      borderSum += gray[x] + gray[(targetH - 1) * targetW + x];
+      borderCount += 2;
+    }
+    const isDarkBg = borderSum / Math.max(1, borderCount) < 110;
+
+    // B2.1: Adaptive Threshold (blockSize=21, C=10)
+    let binary = adaptiveThreshold(gray, targetW, targetH, 21, 10);
+    if (isDarkBg) {
+      // Đảo ngược thành chữ đen (0) trên nền trắng (255)
+      for (let i = 0; i < binary.length; i++) {
+        binary[i] = binary[i] === 0 ? 255 : 0;
+      }
+    }
 
     // B3: Dedither noise
     const cleanBinary = removeDitherNoise(binary, targetW, targetH, 4);
 
     // B4: Tách dòng
-    const scaleFactor = targetW / 1000;
+    const scaleFactor = targetW / 800;
     const lineBoxes = extractLines(cleanBinary, targetW, targetH, scaleFactor);
 
     if (lineBoxes.length === 0) return null;
@@ -320,12 +361,12 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
     let lastScanTime = 0;
 
     const loop = async (timestamp: number) => {
-      // Chỉ quét mỗi ~250ms để không gây nóng máy điện thoại
+      // Quét mỗi ~300ms để không nóng máy
       if (
         isRunning &&
         stream &&
         (step === 'audit' || step === 'date') &&
-        timestamp - lastScanTime > 250 &&
+        timestamp - lastScanTime > 300 &&
         !isProcessing
       ) {
         lastScanTime = timestamp;
@@ -380,6 +421,15 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
     setIsProcessing(true);
     try {
       freezeCurrentFrame();
+
+      if (step === 'date') {
+        await processCurrentFrame();
+        playSuccessBeep();
+        triggerHaptic(150);
+        setStep('final_confirm');
+        return;
+      }
+
       const result = await processCurrentFrame();
       if (result) {
         if (result.confidence.anchorFound) {
@@ -399,8 +449,14 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
 
         setStep('audit_review');
       } else {
-        alert('Không đọc được dữ liệu. Vui lòng căn chỉnh lại khung ngắm vào màn hình.');
+        // Vẫn mở popup xác nhận để nhân viên có thể xác nhận hoặc chỉnh nhanh
+        playWarningBeep();
+        triggerHaptic(100);
+        setStep('audit_review');
       }
+    } catch (err: any) {
+      console.error('Lỗi khi chụp:', err);
+      alert('Lỗi xử lý hình ảnh: ' + (err?.message || err));
     } finally {
       setIsProcessing(false);
     }
@@ -585,7 +641,10 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
         {/* Viewfinder Reticle Overlay */}
         <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-6 z-20">
           {/* Guide Bounding Box */}
-          <div className="w-full max-w-sm h-64 border-2 border-emerald-400/80 rounded-2xl relative shadow-[0_0_0_9999px_rgba(0,0,0,0.5)] transition-all">
+          <div
+            ref={viewfinderRef}
+            className="w-full max-w-sm h-64 border-2 border-emerald-400/80 rounded-2xl relative shadow-[0_0_0_9999px_rgba(0,0,0,0.5)] transition-all"
+          >
             {/* 4 Corner Markers */}
             <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-emerald-400 rounded-tl-lg" />
             <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-emerald-400 rounded-tr-lg" />

@@ -37,29 +37,31 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* System Status Indicators */}
-        <div className="hidden sm:flex items-center gap-2">
+        <div className="flex items-center gap-1 sm:gap-2">
           {/* AI Model Badge */}
           <div
-            className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border ${
+            className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] sm:text-xs font-medium border ${
               isModelReady
                 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
                 : 'bg-amber-500/10 text-amber-400 border-amber-500/30 animate-pulse'
             }`}
           >
-            <Cpu className="w-3.5 h-3.5" />
-            <span>{isModelReady ? 'AI 64x64 Sẵn sàng' : 'Đang nạp AI...'}</span>
+            <Cpu className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
+            <span className="hidden xs:inline">{isModelReady ? 'AI 64x64 Sẵn sàng' : 'Đang nạp AI...'}</span>
+            <span className="xs:hidden">{isModelReady ? 'AI OK' : 'AI...'}</span>
           </div>
 
           {/* Firebase Badge */}
           <div
-            className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border ${
+            className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] sm:text-xs font-medium border ${
               isFirebaseOnline
                 ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
                 : 'bg-slate-800 text-slate-400 border-slate-700'
             }`}
           >
-            <Database className="w-3.5 h-3.5" />
-            <span>{isFirebaseOnline ? 'Firebase Sync' : 'Local DB'}</span>
+            <Database className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
+            <span className="hidden xs:inline">{isFirebaseOnline ? 'Firebase Sync' : 'Local DB'}</span>
+            <span className="xs:hidden">{isFirebaseOnline ? 'Cloud' : 'Local'}</span>
           </div>
         </div>
 

@@ -30,11 +30,12 @@ let session: ort.InferenceSession | null = null;
 let isLoading = false;
 let loadPromise: Promise<ort.InferenceSession> | null = null;
 
-// Cấu hình WASM CDN fallback để đảm bảo chạy mượt trên mọi môi trường
+// Cấu hình WASM single-threaded (numThreads=1) để tương thích 100% trên thiết bị di động
+// không yêu cầu SharedArrayBuffer hay Cross-Origin Isolation
 try {
-  ort.env.wasm.numThreads = 2;
+  ort.env.wasm.numThreads = 1;
   ort.env.wasm.simd = true;
-  ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.0/dist/';
+  ort.env.wasm.wasmPaths = '/wasm/';
 } catch (e) {
   console.warn('Configuring ONNX WASM path warning:', e);
 }
@@ -49,7 +50,11 @@ export async function loadOcrSession(): Promise<ort.InferenceSession> {
   isLoading = true;
   loadPromise = (async () => {
     try {
-      console.log('Loading ONNX model from /models/digit_model_64x64.onnx...');
+      console.log('Loading ONNX model from /models/digit_model_64x64.onnx (local wasm)...');
+      ort.env.wasm.numThreads = 1;
+      ort.env.wasm.simd = true;
+      ort.env.wasm.wasmPaths = '/wasm/';
+
       const sess = await ort.InferenceSession.create('/models/digit_model_64x64.onnx', {
         executionProviders: ['wasm'],
         graphOptimizationLevel: 'all',
@@ -57,9 +62,24 @@ export async function loadOcrSession(): Promise<ort.InferenceSession> {
       session = sess;
       console.log('ONNX Model digit_model_64x64.onnx loaded successfully!');
       return sess;
-    } catch (err) {
-      console.error('Failed to load ONNX model:', err);
-      throw err;
+    } catch (localErr) {
+      console.warn('Local WASM load failed, retrying with CDN fallback...', localErr);
+      try {
+        ort.env.wasm.numThreads = 1;
+        ort.env.wasm.simd = true;
+        ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/';
+        const sess = await ort.InferenceSession.create('/models/digit_model_64x64.onnx', {
+          executionProviders: ['wasm'],
+          graphOptimizationLevel: 'all',
+        });
+        session = sess;
+        console.log('ONNX Model loaded via CDN fallback!');
+        return sess;
+      } catch (cdnErr) {
+        console.error('All ONNX loading attempts failed:', cdnErr);
+        loadPromise = null;
+        throw cdnErr;
+      }
     } finally {
       isLoading = false;
     }
