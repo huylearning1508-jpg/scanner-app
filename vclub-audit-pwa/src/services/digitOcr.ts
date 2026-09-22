@@ -1,6 +1,6 @@
 /**
  * ONNX Runtime Web OCR Service
- * Nạp mô hình digit_model_64x64.onnx (13 lớp: 0-9, %, $, .)
+ * Nạp mô hình digit_model_32x32.onnx (12 lớp: 0-9, $, %)
  * và thực hiện batch inference tốc độ cao.
  */
 
@@ -9,7 +9,7 @@ import type { CharBox, DetectedLine } from '../types';
 import { extractCharactersFromLine } from './imageProcessing';
 import type { Rect } from './imageProcessing';
 
-// Danh sách 13 nhãn chuẩn theo đúng file labels.json
+// Danh sách 12 nhãn chuẩn theo đúng file labels.json của model mới
 export const OCR_LABELS = [
   '0',
   '1',
@@ -21,9 +21,8 @@ export const OCR_LABELS = [
   '7',
   '8',
   '9',
-  '%',
   '$',
-  '.',
+  '%',
 ];
 
 let session: ort.InferenceSession | null = null;
@@ -50,17 +49,28 @@ export async function loadOcrSession(): Promise<ort.InferenceSession> {
   isLoading = true;
   loadPromise = (async () => {
     try {
-      console.log('Loading ONNX model from /models/digit_model_64x64.onnx (local wasm)...');
+      console.log('Loading ONNX model from /models/digit_model_32x32.onnx (local wasm)...');
       ort.env.wasm.numThreads = 1;
       ort.env.wasm.simd = true;
       ort.env.wasm.wasmPaths = '/wasm/';
 
-      const sess = await ort.InferenceSession.create('/models/digit_model_64x64.onnx', {
+      const sess = await ort.InferenceSession.create('/models/digit_model_32x32.onnx', {
         executionProviders: ['wasm'],
         graphOptimizationLevel: 'all',
       });
       session = sess;
-      console.log('ONNX Model digit_model_64x64.onnx loaded successfully!');
+      console.log('ONNX Model digit_model_32x32.onnx loaded successfully!');
+      // Warm-up WebAssembly JIT execution
+      try {
+        const dummy = new Float32Array(1 * 1 * 32 * 32);
+        const dummyTensor = new ort.Tensor('float32', dummy, [1, 1, 32, 32]);
+        const feeds: Record<string, ort.Tensor> = {};
+        feeds[sess.inputNames[0] || 'input'] = dummyTensor;
+        await sess.run(feeds);
+        console.log('ONNX Model JIT warm-up completed!');
+      } catch (wErr) {
+        console.warn('Warm-up warning:', wErr);
+      }
       return sess;
     } catch (localErr) {
       console.warn('Local WASM load failed, retrying with CDN fallback...', localErr);
@@ -68,12 +78,23 @@ export async function loadOcrSession(): Promise<ort.InferenceSession> {
         ort.env.wasm.numThreads = 1;
         ort.env.wasm.simd = true;
         ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/';
-        const sess = await ort.InferenceSession.create('/models/digit_model_64x64.onnx', {
+        const sess = await ort.InferenceSession.create('/models/digit_model_32x32.onnx', {
           executionProviders: ['wasm'],
           graphOptimizationLevel: 'all',
         });
         session = sess;
         console.log('ONNX Model loaded via CDN fallback!');
+        // Warm-up WebAssembly JIT execution
+        try {
+          const dummy = new Float32Array(1 * 1 * 32 * 32);
+          const dummyTensor = new ort.Tensor('float32', dummy, [1, 1, 32, 32]);
+          const feeds: Record<string, ort.Tensor> = {};
+          feeds[sess.inputNames[0] || 'input'] = dummyTensor;
+          await sess.run(feeds);
+          console.log('ONNX Model JIT warm-up completed (CDN)!');
+        } catch (wErr) {
+          console.warn('Warm-up warning:', wErr);
+        }
         return sess;
       } catch (cdnErr) {
         console.error('All ONNX loading attempts failed:', cdnErr);
@@ -125,7 +146,7 @@ export interface CharPrediction {
 }
 
 /**
- * Batch inference cho danh sách các tensor ký tự 64x64
+ * Batch inference cho danh sách các tensor ký tự 32x32
  */
 export async function predictBatch(
   charTensors: Float32Array[]
@@ -134,13 +155,13 @@ export async function predictBatch(
   const N = charTensors.length;
   if (N === 0) return [];
 
-  // Ghép N tensor 64x64 thành 1 tensor liên tục [N, 1, 64, 64]
-  const batchData = new Float32Array(N * 64 * 64);
+  // Ghép N tensor 32x32 thành 1 tensor liên tục [N, 1, 32, 32]
+  const batchData = new Float32Array(N * 32 * 32);
   for (let i = 0; i < N; i++) {
-    batchData.set(charTensors[i], i * 64 * 64);
+    batchData.set(charTensors[i], i * 32 * 32);
   }
 
-  const inputTensor = new ort.Tensor('float32', batchData, [N, 1, 64, 64]);
+  const inputTensor = new ort.Tensor('float32', batchData, [N, 1, 32, 32]);
   const feeds: Record<string, ort.Tensor> = {};
   feeds[sess.inputNames[0] || 'input'] = inputTensor;
 
@@ -149,7 +170,7 @@ export async function predictBatch(
   const outputData = outputTensor.data as Float32Array;
 
   const predictions: CharPrediction[] = [];
-  const numClasses = OCR_LABELS.length; // 13
+  const numClasses = OCR_LABELS.length; // 12
 
   for (let i = 0; i < N; i++) {
     const logits = outputData.subarray(i * numClasses, (i + 1) * numClasses);
@@ -178,9 +199,10 @@ export async function recognizeLine(
   imgWidth: number,
   lineBox: Rect,
   lineIdx: number,
-  scaleFactor = 1.0
+  scaleFactor = 1.0,
+  grayImage?: Uint8Array
 ): Promise<DetectedLine> {
-  const charCrops = extractCharactersFromLine(cleanBinary, imgWidth, lineBox, scaleFactor);
+  const charCrops = extractCharactersFromLine(cleanBinary, imgWidth, lineBox, scaleFactor, grayImage);
   if (charCrops.length === 0) {
     return {
       idx: lineIdx,
@@ -190,19 +212,45 @@ export async function recognizeLine(
     };
   }
 
-  const tensors = charCrops.map((c) => c.tensorData);
-  const preds = await predictBatch(tensors);
+  // Tách riêng các ký tự không phải dấu chấm để chạy batch ONNX
+  const nonDotIndices: number[] = [];
+  const nonDotTensors: Float32Array[] = [];
+
+  for (let i = 0; i < charCrops.length; i++) {
+    if (!charCrops[i].isDot) {
+      nonDotIndices.push(i);
+      nonDotTensors.push(charCrops[i].tensorData);
+    }
+  }
+
+  const preds = nonDotTensors.length > 0 ? await predictBatch(nonDotTensors) : [];
+
+  // Ghép lại kết quả: Dấu chấm gán trực tiếp '.', còn lại lấy từ kết quả ONNX
+  const allPreds: CharPrediction[] = new Array(charCrops.length);
+  for (let pIdx = 0; pIdx < nonDotIndices.length; pIdx++) {
+    allPreds[nonDotIndices[pIdx]] = preds[pIdx];
+  }
+  for (let i = 0; i < charCrops.length; i++) {
+    if (charCrops[i].isDot) {
+      allPreds[i] = {
+        char: '.',
+        confidence: 1.0,
+        classId: -1,
+        candidates: [{ char: '.', confidence: 1.0 }],
+      };
+    }
+  }
 
   const charBoxes: CharBox[] = [];
   let lineText = '';
-  const N = preds.length;
+  const N = allPreds.length;
 
   // Kiểm tra nếu là dòng số nguyên ngắn (vd: Số máy 1..3 chữ số không có dấu chấm '.')
-  const hasDot = preds.some((p) => p.char === '.');
+  const hasDot = allPreds.some((p) => p.char === '.');
   const isShortInteger = N <= 3 && !hasDot;
 
   for (let i = 0; i < N; i++) {
-    const p = preds[i];
+    const p = allPreds[i];
     const crop = charCrops[i];
     const isFirst = i === 0;
     const isLast = i === N - 1;

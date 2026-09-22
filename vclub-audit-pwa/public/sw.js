@@ -1,5 +1,5 @@
-// Service Worker for V Club Audit Scanner PWA (v4)
-const CACHE_NAME = 'vclub-audit-v4';
+// Service Worker for V Club Audit Scanner PWA (v8 - 32x32 model)
+const CACHE_NAME = 'vclub-audit-v8';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -7,8 +7,9 @@ const STATIC_ASSETS = [
   '/favicon.svg',
   '/icon-192.svg',
   '/icon-512.svg',
-  '/models/digit_model_64x64.onnx',
+  '/models/digit_model_32x32.onnx',
   '/models/labels.json',
+  '/wasm/ort-wasm-simd.wasm',
 ];
 
 self.addEventListener('install', (event) => {
@@ -66,7 +67,7 @@ self.addEventListener('fetch', (event) => {
         return cached;
       }
       return fetch(event.request).then((response) => {
-        if (!response || response.status !== 200 || response.type !== 'basic') {
+        if (!response || response.status !== 200 || (response.type !== 'basic' && response.type !== 'cors')) {
           return response;
         }
         const responseToCache = response.clone();

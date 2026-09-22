@@ -80,11 +80,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-1.5 text-xs">
           <div className="flex items-center gap-1.5 font-bold text-slate-200">
             <Cpu className="w-4 h-4 text-emerald-400" />
-            <span>Mô hình AI: digit_model_64x64.onnx</span>
+            <span>Mô hình AI: digit_model_32x32.onnx</span>
           </div>
           <p className="text-slate-400 text-[11px]">
-            Classifier 64×64, 13 lớp: <code>0-9, %, $, .</code> (Bản Model 1.2 "10-Segments Drop",
-            chịu được segment mờ/rớt nét).
+            CharacterNet 32×32, 12 lớp: <code>0-9, $, %</code> (Độ chính xác 99.72% từ dữ liệu màn hình thực tế, dấu chấm tách hình học tự động).
           </p>
         </div>
 

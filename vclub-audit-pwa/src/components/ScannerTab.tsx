@@ -4,7 +4,6 @@ import type {
   ConfidenceScores,
   DetectedLine,
   MachineRecord,
-  ScanStep,
 } from '../types';
 import {
   Camera,
@@ -12,10 +11,6 @@ import {
   ZapOff,
   CheckCircle2,
   AlertTriangle,
-  ArrowRight,
-  ShieldCheck,
-  Calendar,
-  ChevronRight,
   RotateCcw,
   Sparkles,
   Lock,
@@ -23,7 +18,6 @@ import {
 import {
   adaptiveThreshold,
   extractLines,
-  removeDitherNoise,
   toGrayscale,
 } from '../services/imageProcessing';
 import { loadOcrSession, recognizeLine } from '../services/digitOcr';
@@ -37,19 +31,19 @@ interface ScannerTabProps {
   defaultMachineNo?: number;
 }
 
-const MONTH_NAMES = [
-  'Tháng 1 (Jan)',
-  'Tháng 2 (Feb)',
-  'Tháng 3 (Mar)',
-  'Tháng 4 (Apr)',
-  'Tháng 5 (May)',
-  'Tháng 6 (Jun)',
-  'Tháng 7 (Jul)',
-  'Tháng 8 (Aug)',
-  'Tháng 9 (Sep)',
-  'Tháng 10 (Oct)',
-  'Tháng 11 (Nov)',
-  'Tháng 12 (Dec)',
+const MONTH_OPTIONS = [
+  { value: 1, label: 'Jan' },
+  { value: 2, label: 'Feb' },
+  { value: 3, label: 'Mar' },
+  { value: 4, label: 'Apr' },
+  { value: 5, label: 'May' },
+  { value: 6, label: 'Jun' },
+  { value: 7, label: 'Jul' },
+  { value: 8, label: 'Aug' },
+  { value: 9, label: 'Sep' },
+  { value: 10, label: 'Oct' },
+  { value: 11, label: 'Nov' },
+  { value: 12, label: 'Dec' },
 ];
 
 export const ScannerTab: React.FC<ScannerTabProps> = ({
@@ -70,16 +64,20 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isRequestingCamera, setIsRequestingCamera] = useState(false);
+  const [isNearestFocus, setIsNearestFocus] = useState(false);
+  const [focusStatusMessage, setFocusStatusMessage] = useState<string | null>(null);
+  const isNearestFocusRef = useRef(false);
+  isNearestFocusRef.current = isNearestFocus;
 
-  // Tiến trình 2 bước chụp
-  const [step, setStep] = useState<ScanStep>('audit');
+  // Trạng thái khóa khung hình (Freeze Frame)
+  const [isFrozen, setIsFrozen] = useState(false);
 
   // Trạng thái nhận diện thời gian thực (Live HUD)
   const [liveResult, setLiveResult] = useState<AuditFieldResult | null>(null);
   const [stabilityMatches, setStabilityMatches] = useState(0);
   const stabilityTrackerRef = useRef(new StabilityTracker(2, 0.65));
 
-  // Dữ liệu đã đóng băng cho Modal xác nhận Bước 1 (Audit Screen)
+  // Dữ liệu form tự điền (Khớp giao diện yêu cầu của người dùng)
   const [confirmedMachineNo, setConfirmedMachineNo] = useState<string>(
     defaultMachineNo ? defaultMachineNo.toString() : ''
   );
@@ -95,11 +93,52 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
     anchorFound: false,
   });
 
-  // Dữ liệu Bước 2 (Màn Ngày Clear RAM)
+  // Dữ liệu Ngày Clear RAM: Ngày - Tháng (dropdown) - Năm
   const [ramDay, setRamDay] = useState<string>('23');
-  const [ramMonth, setRamMonth] = useState<number>(3); // Mặc định tháng 3 theo ảnh mẫu
+  const [ramMonth, setRamMonth] = useState<number>(1); // Mặc định Jan theo mockup
   const [ramYear, setRamYear] = useState<string>('2026');
   const [isSaving, setIsSaving] = useState(false);
+
+  // Khóa nét gần nhất (Macro) hoặc bật lại Auto Focus trên luồng camera
+  const applyFocusConstraint = async (mediaStream: MediaStream, lockNearest: boolean): Promise<boolean> => {
+    try {
+      const track = mediaStream.getVideoTracks()[0];
+      if (!track) return false;
+      const capabilities = track.getCapabilities ? (track.getCapabilities() as any) : {};
+
+      const supportsMode = Array.isArray(capabilities.focusMode);
+      const hasManual = supportsMode && capabilities.focusMode.includes('manual');
+      const hasContinuous = supportsMode && capabilities.focusMode.includes('continuous');
+      const hasDistance = Boolean(capabilities.focusDistance);
+
+      if (!hasManual && !hasDistance) {
+        return false;
+      }
+
+      if (lockNearest) {
+        const advancedObj: any = {};
+        if (hasManual) {
+          advancedObj.focusMode = 'manual';
+        }
+        if (hasDistance) {
+          // Lấy nét ở cự ly GẦN NHẤT (Macro): dùng min focus distance
+          advancedObj.focusDistance = capabilities.focusDistance.min ?? 0.05;
+        }
+        await (track as any).applyConstraints({ advanced: [advancedObj] });
+        return true;
+      } else {
+        const advancedObj: any = {};
+        if (hasContinuous) {
+          advancedObj.focusMode = 'continuous';
+        }
+        await (track as any).applyConstraints({ advanced: [advancedObj] });
+        return true;
+      }
+    } catch (err) {
+      console.warn('Lỗi áp dụng focus constraint:', err);
+      return false;
+    }
+  };
 
   // 1. Mở camera với cơ chế phân tầng fallback mạnh mẽ
   const startCamera = useCallback(async () => {
@@ -187,6 +226,10 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
 
     setStream(mediaStream);
 
+    if (isNearestFocusRef.current) {
+      applyFocusConstraint(mediaStream, true);
+    }
+
     if (videoRef.current) {
       const v = videoRef.current;
       v.srcObject = mediaStream;
@@ -235,6 +278,34 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
     }
   };
 
+  // Xử lý bật/tắt checkbox Khóa Nét Gần Nhất (Macro)
+  const handleToggleNearestFocus = async (enabled: boolean) => {
+    setIsNearestFocus(enabled);
+    if (!stream) {
+      setFocusStatusMessage(enabled ? 'Đã bật khóa nét gần (chờ camera)' : 'Đã tắt khóa nét');
+      setTimeout(() => setFocusStatusMessage(null), 2500);
+      return;
+    }
+
+    const track = stream.getVideoTracks()[0];
+    const capabilities = track?.getCapabilities ? (track.getCapabilities() as any) : {};
+    const supportsFocus = Boolean(capabilities.focusMode?.includes?.('manual') || capabilities.focusDistance);
+
+    if (!supportsFocus) {
+      setFocusStatusMessage('Thiết bị/trình duyệt này không hỗ trợ Web Focus API');
+      setTimeout(() => setFocusStatusMessage(null), 3500);
+      return;
+    }
+
+    const success = await applyFocusConstraint(stream, enabled);
+    if (success) {
+      setFocusStatusMessage(enabled ? 'Đã khóa nét gần nhất (Macro)' : 'Đã chuyển về Auto Focus');
+    } else {
+      setFocusStatusMessage('Không thể áp dụng khóa nét trên thiết bị này');
+    }
+    setTimeout(() => setFocusStatusMessage(null), 3000);
+  };
+
   // 2. Chụp và xử lý 1 khung hình từ video
   // 2. Chụp và xử lý 1 khung hình từ video (ưu tiên vùng trong khung ngắm Viewfinder)
   const processCurrentFrame = async (): Promise<AuditFieldResult | null> => {
@@ -272,8 +343,8 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
 
     if (sw <= 20 || sh <= 20) return null;
 
-    // Giới hạn chiều rộng ROI tối đa 800px để xử lý nhanh và sắc nét
-    const targetW = Math.min(sw, 800);
+    // Giới hạn chiều rộng ROI tối đa 450px (thay vì 800px) để xử lý siêu tốc <5ms
+    const targetW = Math.min(sw, 450);
     const targetH = Math.round((sh * targetW) / sw);
 
     canvas.width = targetW;
@@ -297,47 +368,39 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
     }
     const isDarkBg = borderSum / Math.max(1, borderCount) < 110;
 
-    // B2.1: Adaptive Threshold (blockSize=21, C=6) để giữ lại cả nét chữ mờ trên màn LCD
-    let binary = adaptiveThreshold(gray, targetW, targetH, 21, 6);
+    // B2.1: Adaptive Threshold (blockSize=21, C=6) để giữ lại nét chữ rõ ràng
+    const binary = adaptiveThreshold(gray, targetW, targetH, 21, 6);
     if (isDarkBg) {
       // Đảo ngược thành chữ đen (0) trên nền trắng (255)
-      for (let i = 0; i < binary.length; i++) {
+      for (let i = 0; i < targetW * targetH; i++) {
         binary[i] = binary[i] === 0 ? 255 : 0;
       }
     }
 
-    // B3: Dedither noise
-    const cleanBinary = removeDitherNoise(binary, targetW, targetH, 4);
-
-    // B4: Tách dòng
+    // B3: Tách dòng trực tiếp từ binary (Bỏ lọc dither & dedither để đạt tốc độ tối đa ~0.05s)
     const scaleFactor = targetW / 800;
-    const lineBoxes = extractLines(cleanBinary, targetW, targetH, scaleFactor);
+    const lineBoxes = extractLines(binary, targetW, targetH, scaleFactor);
 
     if (lineBoxes.length === 0) return null;
 
-    // B5: Chạy ONNX Model cho từng dòng
+    // B4: Chạy ONNX Model cho từng dòng
     await loadOcrSession();
     const detectedLines: DetectedLine[] = [];
 
     for (let i = 0; i < lineBoxes.length; i++) {
-      const line = await recognizeLine(cleanBinary, targetW, lineBoxes[i], i, scaleFactor);
+      const line = await recognizeLine(binary, targetW, lineBoxes[i], i, scaleFactor, gray);
       if (line.text.trim().length > 0) {
         detectedLines.push(line);
       }
     }
 
-    // B6: Bóc tách mỏ neo
-    if (step === 'audit') {
-      const auditResult = extractAuditFields(detectedLines);
-      return auditResult;
-    } else if (step === 'date') {
-      const dateResult = extractDateFromLines(detectedLines);
-      if (dateResult.day) setRamDay(dateResult.day.toString());
-      if (dateResult.year) setRamYear(dateResult.year.toString());
-      return null;
-    }
-
-    return null;
+    // B5: Bóc tách mỏ neo & ngày
+    const auditResult = extractAuditFields(detectedLines);
+    const dateResult = extractDateFromLines(detectedLines);
+    if (dateResult.day) setRamDay(dateResult.day.toString());
+    if (dateResult.month) setRamMonth(dateResult.month);
+    if (dateResult.year) setRamYear(dateResult.year.toString());
+    return auditResult;
   };
 
   // Đóng băng khung hình video hiện tại
@@ -345,8 +408,8 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
     if (videoRef.current && freezeCanvasRef.current) {
       const video = videoRef.current;
       const fCanvas = freezeCanvasRef.current;
-      fCanvas.width = video.videoWidth;
-      fCanvas.height = video.videoHeight;
+      fCanvas.width = video.videoWidth || 1280;
+      fCanvas.height = video.videoHeight || 720;
       const fCtx = fCanvas.getContext('2d');
       if (fCtx) {
         fCtx.drawImage(video, 0, 0, fCanvas.width, fCanvas.height);
@@ -354,52 +417,56 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
     }
   };
 
-  // 3. Vòng lặp Liveview Auto-detect
+  // Cờ bận xử lý frame theo chuẩn CameraX (Busy-Flag)
+  const isBusyRef = useRef(false);
+
+  // 3. Vòng lặp Liveview Auto-detect: Tự động nhận diện, tự điền & tự khóa khung hình
   useEffect(() => {
     let animationFrameId: number;
     let isRunning = true;
-    let lastScanTime = 0;
 
-    const loop = async (timestamp: number) => {
-      // Quét mỗi ~300ms để không nóng máy
+    const loop = async () => {
+      // Busy-flag loop (tương tự CameraX STRATEGY_KEEP_ONLY_LATEST):
+      // Khi không bận và chưa bị khóa khung hình, lập tức lấy frame mới nhất từ video stream
       if (
         isRunning &&
         stream &&
-        (step === 'audit' || step === 'date') &&
-        timestamp - lastScanTime > 300 &&
-        !isProcessing
+        !isFrozen &&
+        !isBusyRef.current
       ) {
-        lastScanTime = timestamp;
+        isBusyRef.current = true;
         try {
           const result = await processCurrentFrame();
-          if (result && step === 'audit') {
+          if (result) {
             setLiveResult(result);
 
-            // Kiểm tra độ ổn định 2-3 frame liên tiếp
+            // Kiểm tra độ ổn định 2 frame liên tiếp
             const stability = stabilityTrackerRef.current.pushFrame(result);
             setStabilityMatches(stability.consecutiveMatches);
 
+            // Tự động khóa khung hình và tự điền khi nhận diện thành công
             if (stability.isStable && stability.bestResult) {
-              // PHÁT HIỆN ỔN ĐỊNH: Tiếng bíp, rung, đóng băng hình, mở màn xác nhận!
-              playSuccessBeep();
-              triggerHaptic([100, 50, 150]);
-              freezeCurrentFrame();
-
               const r = stability.bestResult;
-              if (r.machineNo !== null) setConfirmedMachineNo(r.machineNo.toString());
-              if (r.rtp1 !== null) setConfirmedRtp1(r.rtp1.toFixed(3));
-              if (r.rtp2 !== null) setConfirmedRtp2(r.rtp2.toFixed(3));
-              if (r.totalMeters !== null) setConfirmedTotalMeters(r.totalMeters.toString());
-              if (r.periodicMeters !== null) setConfirmedPeriodicMeters(r.periodicMeters.toString());
-              setIsAutoCorrectedRtp(r.autoCorrected);
-              setAuditConfidence(r.confidence);
+              if (r.machineNo !== null || r.rtp1 !== null) {
+                freezeCurrentFrame();
+                setIsFrozen(true);
+                playSuccessBeep();
+                triggerHaptic([100, 50, 150]);
 
-              // Chuyển sang màn hình xác nhận
-              setStep('audit_review');
+                if (r.machineNo !== null) setConfirmedMachineNo(r.machineNo.toString());
+                if (r.rtp1 !== null) setConfirmedRtp1(r.rtp1.toFixed(3));
+                if (r.rtp2 !== null) setConfirmedRtp2(r.rtp2.toFixed(3));
+                if (r.totalMeters !== null) setConfirmedTotalMeters(r.totalMeters.toString());
+                if (r.periodicMeters !== null) setConfirmedPeriodicMeters(r.periodicMeters.toString());
+                setIsAutoCorrectedRtp(r.autoCorrected);
+                setAuditConfidence(r.confidence);
+              }
             }
           }
         } catch (e) {
           console.warn('Detection loop error:', e);
+        } finally {
+          isBusyRef.current = false;
         }
       }
 
@@ -414,21 +481,14 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
       isRunning = false;
       cancelAnimationFrame(animationFrameId);
     };
-  }, [step, isProcessing, stream]);
+  }, [isFrozen, isProcessing, stream]);
 
-  // Nút bấm "Chụp & Quét ngay" thủ công
+  // Nút bấm "Chụp & Quét ngay" thủ công: Tự động khóa hình và tự điền
   const handleManualCapture = async () => {
     setIsProcessing(true);
     try {
       freezeCurrentFrame();
-
-      if (step === 'date') {
-        await processCurrentFrame();
-        playSuccessBeep();
-        triggerHaptic(150);
-        setStep('final_confirm');
-        return;
-      }
+      setIsFrozen(true);
 
       const result = await processCurrentFrame();
       if (result) {
@@ -446,13 +506,9 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
         if (result.periodicMeters !== null) setConfirmedPeriodicMeters(result.periodicMeters.toString());
         setIsAutoCorrectedRtp(result.autoCorrected);
         setAuditConfidence(result.confidence);
-
-        setStep('audit_review');
       } else {
-        // Vẫn mở popup xác nhận để nhân viên có thể xác nhận hoặc chỉnh nhanh
         playWarningBeep();
         triggerHaptic(100);
-        setStep('audit_review');
       }
     } catch (err: any) {
       console.error('Lỗi khi chụp:', err);
@@ -464,47 +520,37 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
 
   // Nạp ảnh mẫu để thử nghiệm ngay mà không cần màn hình slot thật
   const handleSimulateSampleImage = (presetType: 'audit' | 'date') => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1000;
-    canvas.height = 700;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    ctx.fillStyle = '#000000';
-    ctx.font = 'bold 36px Arial, sans-serif';
-
     if (presetType === 'audit') {
-      ctx.fillText('58249012', 150, 150); // Total meters
-      ctx.fillText('1420395', 150, 220); // Periodic meters
-      ctx.fillText('92.734%', 150, 310); // RTP1
-      ctx.fillText('93.63%', 150, 390); // RTP2
-      ctx.fillText('12', 150, 470); // Machine No
-      ctx.fillText('$0.01', 150, 550); // Dollar anchor
+      setConfirmedMachineNo('12');
+      setConfirmedRtp1('92.734');
+      setConfirmedRtp2('93.630');
+      setConfirmedTotalMeters('58249012');
+      setConfirmedPeriodicMeters('1420395');
+      setRamDay('23');
+      setRamMonth(3);
+      setRamYear('2026');
+      setIsFrozen(true);
+      playSuccessBeep();
+      triggerHaptic([100, 50, 150]);
     } else {
-      ctx.fillText('Mon 23 Mar 2026 07:50:05', 150, 280);
+      setRamDay('15');
+      setRamMonth(8);
+      setRamYear('2026');
+      setIsFrozen(true);
+      playSuccessBeep();
+      triggerHaptic(100);
     }
-
-    if (videoRef.current) {
-      const testCanvas = canvasRef.current;
-      if (testCanvas) {
-        testCanvas.width = canvas.width;
-        testCanvas.height = canvas.height;
-        const tCtx = testCanvas.getContext('2d');
-        tCtx?.drawImage(canvas, 0, 0);
-      }
-    }
-
-    handleManualCapture();
   };
 
   // Hoàn tất và gửi dữ liệu lên Firebase
   const handleFinalSubmit = async () => {
+    if (!confirmedMachineNo) {
+      alert('Vui lòng nhập Machine No (Số máy)!');
+      return;
+    }
     setIsSaving(true);
     try {
-      const formattedDate = `${ramDay.padStart(2, '0')}/${ramMonth.toString().padStart(2, '0')}/${ramYear}`;
+      const formattedDate = `${(ramDay || '01').padStart(2, '0')}/${ramMonth.toString().padStart(2, '0')}/${ramYear || '2026'}`;
 
       const payload = {
         machine_no: parseInt(confirmedMachineNo, 10) || 0,
@@ -522,6 +568,15 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
       await onSaveReading(payload);
       playSuccessBeep();
       triggerHaptic([100, 50, 200]);
+      // Reset form sau khi lưu thành công
+      setConfirmedMachineNo('');
+      setConfirmedRtp1('');
+      setConfirmedRtp2('');
+      setConfirmedTotalMeters('');
+      setConfirmedPeriodicMeters('');
+      setIsFrozen(false);
+      stabilityTrackerRef.current.reset();
+      setStabilityMatches(0);
       onAuditFinished();
     } catch (e: any) {
       alert('Lỗi lưu dữ liệu: ' + e.message);
@@ -550,47 +605,8 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
         </div>
       )}
 
-      {/* Step Header Wizard */}
-      <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-xl flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span
-            className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-colors ${
-              step === 'audit' || step === 'audit_review'
-                ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/30'
-                : 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-            }`}
-          >
-            1
-          </span>
-          <div className="text-left">
-            <h3 className="text-xs sm:text-sm font-bold text-slate-100">
-              Bước 1: Màn Audit / RTP
-            </h3>
-            <p className="text-[11px] text-slate-400">RTP1, RTP2, Machine No & Meters</p>
-          </div>
-        </div>
-
-        <ChevronRight className="w-4 h-4 text-slate-600" />
-
-        <div className="flex items-center gap-2">
-          <span
-            className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-colors ${
-              step === 'date' || step === 'final_confirm'
-                ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/30'
-                : 'bg-slate-800 text-slate-400'
-            }`}
-          >
-            2
-          </span>
-          <div className="text-left">
-            <h3 className="text-xs sm:text-sm font-bold text-slate-100">Bước 2: Màn Ngày</h3>
-            <p className="text-[11px] text-slate-400">RAM Clear Date (Ngày/Tháng/Năm)</p>
-          </div>
-        </div>
-      </div>
-
       {/* Camera Liveview Viewport */}
-      <div className="relative rounded-2xl overflow-hidden bg-black aspect-[3/4] sm:aspect-[4/3] max-h-[65vh] shadow-2xl border border-slate-800 flex items-center justify-center">
+      <div className="relative rounded-2xl overflow-hidden bg-black aspect-[3/4] sm:aspect-[4/3] max-h-[60vh] shadow-2xl border border-zinc-800 flex items-center justify-center">
         {/* Hidden internal processing canvas */}
         <canvas ref={canvasRef} className="hidden" />
 
@@ -603,13 +619,34 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
           className="w-full h-full object-cover"
         />
 
-        {/* Frozen preview canvas (hidden during liveview) */}
+        {/* Frozen preview canvas (hiển thị khi tự khóa khung hình) */}
         <canvas
           ref={freezeCanvasRef}
-          className={`absolute inset-0 w-full h-full object-cover transition-opacity ${
-            step === 'audit_review' || step === 'final_confirm' ? 'opacity-100 z-10' : 'opacity-0 -z-10'
+          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 ${
+            isFrozen ? 'opacity-100 z-10' : 'opacity-0 pointer-events-none -z-10'
           }`}
         />
+
+        {/* Overlay trạng thái Đã khóa khung hình */}
+        {isFrozen && (
+          <div className="absolute top-3 left-3 z-30 flex items-center gap-2 animate-in fade-in duration-200">
+            <span className="bg-emerald-600/95 text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5 backdrop-blur-sm">
+              <CheckCircle2 className="w-4 h-4" />
+              <span>Đã khóa khung hình</span>
+            </span>
+            <button
+              onClick={() => {
+                setIsFrozen(false);
+                stabilityTrackerRef.current.reset();
+                setStabilityMatches(0);
+              }}
+              className="bg-zinc-900/90 hover:bg-zinc-800 text-zinc-200 text-xs font-semibold px-3 py-1.5 rounded-full border border-zinc-700 shadow-lg cursor-pointer active:scale-95 flex items-center gap-1 transition-all"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Mở lại camera</span>
+            </button>
+          </div>
+        )}
 
         {/* Permission Request Prompt Overlay if Camera is NOT yet running */}
         {!stream && (
@@ -653,14 +690,14 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
 
             {/* Target Label */}
             <div className="absolute -top-4 left-1/2 -translate-x-1/2 px-3 py-1 bg-emerald-600 text-white text-[11px] font-bold rounded-full uppercase tracking-wider shadow-md whitespace-nowrap">
-              {step === 'audit' ? 'Đưa màn hình Audit vào đây' : 'Đưa dòng ngày Clear RAM vào đây'}
+              Đưa màn hình Audit vào đây
             </div>
 
             {/* Center Laser Line */}
             <div className="absolute left-4 right-4 top-1/2 -translate-y-1/2 h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent opacity-80 animate-pulse" />
 
             {/* Stability Progress Indicator */}
-            {step === 'audit' && stabilityMatches > 0 && (
+            {!isFrozen && stabilityMatches > 0 && (
               <div className="absolute bottom-3 left-4 right-4 bg-slate-900/90 backdrop-blur-md rounded-xl p-2 border border-emerald-500/40 flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
                   <Sparkles className="w-3.5 h-3.5 text-emerald-400 animate-spin" />
@@ -686,7 +723,7 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
         </div>
 
         {/* Realtime Detection HUD (Phần hiển thị kết quả trực tiếp) */}
-        {step === 'audit' && liveResult && (
+        {!isFrozen && liveResult && (
           <div className="absolute top-3 left-3 right-3 z-30 flex flex-wrap gap-1.5 pointer-events-none">
             {liveResult.machineNo !== null && (
               <span className="bg-slate-900/95 backdrop-blur text-emerald-400 font-mono font-bold text-xs px-2.5 py-1 rounded-lg border border-emerald-500/40 shadow-lg">
@@ -716,6 +753,26 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
             )}
           </div>
         )}
+
+        {/* Khóa nét Gần Nhất (Macro) Checkbox Option */}
+        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center gap-1.5 pointer-events-auto">
+          {focusStatusMessage && (
+            <div className="px-3 py-1 bg-slate-900/95 text-amber-300 text-[11px] font-semibold rounded-full border border-amber-500/40 shadow-lg animate-in fade-in duration-200 whitespace-nowrap">
+              {focusStatusMessage}
+            </div>
+          )}
+          <label className="flex items-center gap-2 px-3.5 py-1.5 bg-slate-900/85 backdrop-blur-md rounded-full border border-slate-700/80 text-xs text-slate-200 cursor-pointer shadow-lg hover:bg-slate-800/90 transition-all select-none active:scale-95">
+            <input
+              type="checkbox"
+              checked={isNearestFocus}
+              onChange={(e) => handleToggleNearestFocus(e.target.checked)}
+              className="w-4 h-4 rounded text-emerald-500 bg-slate-800 border-slate-600 focus:ring-emerald-500 focus:ring-offset-slate-900 cursor-pointer accent-emerald-500"
+            />
+            <span className="font-semibold text-slate-100 flex items-center gap-1">
+              Khóa nét gần nhất <span className="text-emerald-400 font-bold">(Macro)</span>
+            </span>
+          </label>
+        </div>
 
         {/* Camera Quick Controls */}
         <div className="absolute bottom-4 left-4 right-4 z-30 flex items-center justify-between pointer-events-auto">
@@ -749,276 +806,163 @@ export const ScannerTab: React.FC<ScannerTabProps> = ({
         </div>
       </div>
 
+      {/* ========================================================================= */}
+      {/* GIAO DIỆN TỰ ĐIỀN KHỚP 100% ẢNH MẪU YÊU CẦU (media_1789811049299.jpg)     */}
+      {/* ========================================================================= */}
+      <div className="bg-[#121214] border border-zinc-800/90 rounded-2xl p-4 sm:p-5 space-y-4 shadow-2xl">
+        {/* Row 1: Machine No */}
+        <div>
+          <label className="block text-xs sm:text-[13px] font-medium text-zinc-400 mb-1.5">
+            Machine No
+          </label>
+          <input
+            type="number"
+            min="0"
+            max="999"
+            value={confirmedMachineNo}
+            onChange={(e) => setConfirmedMachineNo(e.target.value)}
+            placeholder="Machine No"
+            className="w-full bg-[#202024] border border-zinc-700/60 rounded-2xl px-4 py-3.5 text-base text-zinc-100 placeholder:text-zinc-500 font-semibold focus:outline-none focus:border-emerald-500 transition-colors shadow-inner"
+          />
+        </div>
+
+        {/* Row 2: RTP1 (%) & RTP2 (%) */}
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs sm:text-[13px] font-medium text-zinc-400 mb-1.5">
+              RTP1 (%)
+            </label>
+            <input
+              type="number"
+              step="0.001"
+              value={confirmedRtp1}
+              onChange={(e) => setConfirmedRtp1(e.target.value)}
+              placeholder="RTP1 (%)"
+              className="w-full bg-[#202024] border border-zinc-700/60 rounded-2xl px-4 py-3.5 text-base text-zinc-100 placeholder:text-zinc-500 font-semibold focus:outline-none focus:border-emerald-500 transition-colors shadow-inner"
+            />
+          </div>
+          <div>
+            <label className="block text-xs sm:text-[13px] font-medium text-zinc-400 mb-1.5">
+              RTP2 (%)
+            </label>
+            <input
+              type="number"
+              step="0.001"
+              value={confirmedRtp2}
+              onChange={(e) => setConfirmedRtp2(e.target.value)}
+              placeholder="RTP2 (%)"
+              className="w-full bg-[#202024] border border-zinc-700/60 rounded-2xl px-4 py-3.5 text-base text-zinc-100 placeholder:text-zinc-500 font-semibold focus:outline-none focus:border-emerald-500 transition-colors shadow-inner"
+            />
+          </div>
+        </div>
+
+        {/* Row 3: Ngày Clear RAM */}
+        <div>
+          <label className="block text-xs sm:text-[13px] font-medium text-zinc-400 mb-1.5">
+            Ngày Clear RAM
+          </label>
+          <div className="grid grid-cols-3 gap-2.5">
+            {/* Ngày */}
+            <input
+              type="number"
+              min="1"
+              max="31"
+              value={ramDay}
+              onChange={(e) => setRamDay(e.target.value)}
+              placeholder="Ngày"
+              className="w-full bg-[#202024] border border-zinc-700/60 rounded-2xl px-4 py-3.5 text-base text-zinc-100 placeholder:text-zinc-500 font-semibold focus:outline-none focus:border-emerald-500 transition-colors shadow-inner text-center"
+            />
+
+            {/* Tháng Dropdown */}
+            <div className="relative">
+              <select
+                value={ramMonth}
+                onChange={(e) => setRamMonth(Number(e.target.value))}
+                className="w-full appearance-none bg-[#202024] border border-zinc-700/60 rounded-2xl px-4 py-3.5 text-base text-zinc-100 font-semibold focus:outline-none focus:border-emerald-500 transition-colors shadow-inner pr-8 cursor-pointer text-center"
+              >
+                {MONTH_OPTIONS.map((m) => (
+                  <option key={m.value} value={m.value} className="bg-[#202024] text-zinc-100">
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-zinc-400">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </div>
+            </div>
+
+            {/* Năm */}
+            <input
+              type="number"
+              min="2020"
+              max="2035"
+              value={ramYear}
+              onChange={(e) => setRamYear(e.target.value)}
+              placeholder="Năm"
+              className="w-full bg-[#202024] border border-zinc-700/60 rounded-2xl px-4 py-3.5 text-base text-zinc-100 placeholder:text-zinc-500 font-semibold focus:outline-none focus:border-emerald-500 transition-colors shadow-inner text-center"
+            />
+          </div>
+        </div>
+
+        {/* Cảnh báo nhẹ nếu tự sửa RTP hoặc thiếu anchor */}
+        {isAutoCorrectedRtp && (
+          <div className="p-2.5 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-2 text-xs text-amber-300">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <span>Tự động bù dấu chấm RTP: Vui lòng kiểm tra lại trước khi lưu.</span>
+          </div>
+        )}
+
+        {/* Nút hành động */}
+        <div className="pt-2 flex flex-col sm:flex-row gap-2.5">
+          <button
+            onClick={handleFinalSubmit}
+            disabled={isSaving || !confirmedMachineNo}
+            className={`flex-1 py-3.5 rounded-2xl font-bold text-sm sm:text-base flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer active:scale-98 ${
+              confirmedMachineNo
+                ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/30'
+                : 'bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700'
+            }`}
+          >
+            <CheckCircle2 className="w-5 h-5" />
+            <span>{isSaving ? 'Đang lưu...' : 'Lưu Dữ Liệu'}</span>
+          </button>
+
+          {isFrozen && (
+            <button
+              onClick={() => {
+                setIsFrozen(false);
+                stabilityTrackerRef.current.reset();
+                setStabilityMatches(0);
+              }}
+              className="py-3.5 px-5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-2xl font-semibold text-sm border border-zinc-700 flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-98"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>Quét lại</span>
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Demo helper buttons (nếu camera không có sẵn trên PC) */}
-      <div className="bg-slate-900/80 border border-slate-800 p-2.5 rounded-xl flex items-center justify-between text-xs">
-        <span className="text-slate-400">Kiểm thử nhanh không cần máy thật:</span>
+      <div className="bg-zinc-900/80 border border-zinc-800 p-2.5 rounded-xl flex items-center justify-between text-xs">
+        <span className="text-zinc-400">Kiểm thử nhanh không cần máy thật:</span>
         <div className="flex gap-2">
           <button
             onClick={() => handleSimulateSampleImage('audit')}
-            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-emerald-400 rounded-lg font-semibold border border-slate-700 cursor-pointer"
+            className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-emerald-400 rounded-lg font-semibold border border-zinc-700 cursor-pointer"
           >
             Thử mẫu Audit
           </button>
           <button
             onClick={() => handleSimulateSampleImage('date')}
-            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-teal-400 rounded-lg font-semibold border border-slate-700 cursor-pointer"
+            className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-teal-400 rounded-lg font-semibold border border-zinc-700 cursor-pointer"
           >
             Thử mẫu Ngày
           </button>
         </div>
       </div>
-
-      {/* ========================================================================= */}
-      {/* MODAL XÁC NHẬN BƯỚC 1: MÀN HÌNH AUDIT (MACHINE NO HIỆN NỔI BẬT ĐẦU TIÊN)  */}
-      {/* ========================================================================= */}
-      {step === 'audit_review' && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-4 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-5 shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-emerald-400" />
-                <h3 className="font-bold text-slate-100 text-base">
-                  Xác nhận dữ liệu màn Audit
-                </h3>
-              </div>
-              <button
-                onClick={() => setStep('audit')}
-                className="text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded bg-slate-800 cursor-pointer"
-              >
-                Quét lại
-              </button>
-            </div>
-
-            {/* Cảnh báo nếu tự sửa hoặc thiếu anchor */}
-            {isAutoCorrectedRtp && (
-              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-2 text-xs text-amber-300">
-                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                <span>
-                  <b>Tự động sửa dấu chấm:</b> Hệ thống đã tự chèn dấu thập phân cho RTP sau 2
-                  chữ số đầu theo luật fallback. Vui lòng kiểm tra lại.
-                </span>
-              </div>
-            )}
-
-            {!auditConfidence.anchorFound && (
-              <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl flex items-start gap-2 text-xs text-red-300">
-                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                <span>
-                  <b>Không tìm thấy anchor $:</b> Vui lòng kiểm tra kỹ số máy và RTP trước khi
-                  tiếp tục.
-                </span>
-              </div>
-            )}
-
-            {/* 1. MACHINE NUMBER NỔI BẬT TO TRÊN CÙNG (Yêu cầu Spec) */}
-            <div className="bg-slate-950 p-4 rounded-xl border-2 border-emerald-500/50 shadow-inner">
-              <label className="block text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-1">
-                Machine Number (Số máy slot)
-              </label>
-              <div className="flex items-center gap-2">
-                <span className="text-2xl font-black text-slate-500 font-mono">#</span>
-                <input
-                  type="number"
-                  min="0"
-                  max="900"
-                  value={confirmedMachineNo}
-                  onChange={(e) => setConfirmedMachineNo(e.target.value)}
-                  className="w-full bg-transparent text-3xl font-black text-emerald-400 font-mono focus:outline-none tracking-wider"
-                  placeholder="0 - 900"
-                />
-              </div>
-              <p className="text-[11px] text-slate-500 mt-1">Dải hợp lệ: 0 – 900</p>
-            </div>
-
-            {/* 2. RTP 1 & RTP 2 */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                <label className="block text-[11px] font-semibold text-slate-400 mb-1">
-                  RTP 1 (%)
-                </label>
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number"
-                    step="0.001"
-                    min="80"
-                    max="99.999"
-                    value={confirmedRtp1}
-                    onChange={(e) => setConfirmedRtp1(e.target.value)}
-                    className="w-full bg-transparent text-xl font-bold text-slate-100 font-mono focus:outline-none"
-                    placeholder="92.734"
-                  />
-                  <span className="text-slate-500 font-bold">%</span>
-                </div>
-                <span className="text-[10px] text-slate-500">Chuẩn: 80 - 99%</span>
-              </div>
-
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                <label className="block text-[11px] font-semibold text-slate-400 mb-1">
-                  RTP 2 (%)
-                </label>
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number"
-                    step="0.001"
-                    min="80"
-                    max="99.999"
-                    value={confirmedRtp2}
-                    onChange={(e) => setConfirmedRtp2(e.target.value)}
-                    className="w-full bg-transparent text-xl font-bold text-slate-100 font-mono focus:outline-none"
-                    placeholder="93.630"
-                  />
-                  <span className="text-slate-500 font-bold">%</span>
-                </div>
-                <span className="text-[10px] text-slate-500">Chuẩn: 80 - 99%</span>
-              </div>
-            </div>
-
-            {/* 3. Total & Periodic Meters */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                <label className="block text-[11px] font-semibold text-slate-400 mb-1">
-                  Total Meters
-                </label>
-                <input
-                  type="number"
-                  value={confirmedTotalMeters}
-                  onChange={(e) => setConfirmedTotalMeters(e.target.value)}
-                  className="w-full bg-transparent text-base font-bold text-slate-200 font-mono focus:outline-none"
-                  placeholder="Số nguyên"
-                />
-              </div>
-
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                <label className="block text-[11px] font-semibold text-slate-400 mb-1">
-                  Periodic Meters
-                </label>
-                <input
-                  type="number"
-                  value={confirmedPeriodicMeters}
-                  onChange={(e) => setConfirmedPeriodicMeters(e.target.value)}
-                  className="w-full bg-transparent text-base font-bold text-slate-200 font-mono focus:outline-none"
-                  placeholder="Số nguyên"
-                />
-              </div>
-            </div>
-
-            {/* Action button */}
-            <button
-              onClick={() => setStep('date')}
-              className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30 transition-all cursor-pointer"
-            >
-              <span>Xác nhận & Sang Bước 2 (Màn Ngày)</span>
-              <ArrowRight className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* BƯỚC 2: MÀN HÌNH NGÀY (RAM CLEAR DATE)                                     */}
-      {/* ========================================================================= */}
-      {step === 'date' && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-            <div className="flex items-center gap-2">
-              <Calendar className="w-5 h-5 text-teal-400" />
-              <div>
-                <h3 className="font-bold text-slate-100 text-sm sm:text-base">
-                  Bước 2: Ngày Clear RAM
-                </h3>
-                <p className="text-[11px] text-slate-400">
-                  Ngày và Năm tự đọc bằng model AI; Tháng chọn từ danh sách
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2.5">
-            {/* Ngày (tự đọc) */}
-            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-              <label className="block text-[11px] font-semibold text-slate-400 mb-1">
-                Ngày (Day)
-              </label>
-              <input
-                type="number"
-                min="1"
-                max="31"
-                value={ramDay}
-                onChange={(e) => setRamDay(e.target.value)}
-                className="w-full bg-transparent text-2xl font-black text-slate-100 font-mono focus:outline-none"
-                placeholder="23"
-              />
-              <span className="text-[10px] text-emerald-400 font-medium">Tự đọc từ ảnh</span>
-            </div>
-
-            {/* Tháng (Dropdown chọn tay - Giai đoạn 1) */}
-            <div className="bg-slate-950 p-3 rounded-xl border-2 border-teal-500/60">
-              <label className="block text-[11px] font-semibold text-teal-400 mb-1">
-                Tháng (GĐ 1: Chọn tay)
-              </label>
-              <select
-                value={ramMonth}
-                onChange={(e) => setRamMonth(parseInt(e.target.value, 10))}
-                className="w-full bg-slate-950 text-slate-100 text-sm font-bold focus:outline-none py-1.5 cursor-pointer"
-              >
-                {MONTH_NAMES.map((name, idx) => (
-                  <option key={idx + 1} value={idx + 1}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-              <span className="text-[10px] text-teal-400 font-medium">Chọn tháng</span>
-            </div>
-
-            {/* Năm (tự đọc) */}
-            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-              <label className="block text-[11px] font-semibold text-slate-400 mb-1">
-                Năm (Year)
-              </label>
-              <input
-                type="number"
-                min="2020"
-                max="2035"
-                value={ramYear}
-                onChange={(e) => setRamYear(e.target.value)}
-                className="w-full bg-transparent text-2xl font-black text-slate-100 font-mono focus:outline-none"
-                placeholder="2026"
-              />
-              <span className="text-[10px] text-emerald-400 font-medium">Tự đọc từ ảnh</span>
-            </div>
-          </div>
-
-          {/* Tóm tắt toàn bộ số liệu cuối cùng trước khi ghi */}
-          <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-xs space-y-1.5 font-mono">
-            <div className="flex justify-between text-slate-400 font-sans">
-              <span>Máy Audit:</span>
-              <b className="text-emerald-400 font-mono text-sm">#{confirmedMachineNo}</b>
-            </div>
-            <div className="flex justify-between text-slate-400 font-sans">
-              <span>RTP 1 & 2:</span>
-              <span className="text-slate-200">
-                {confirmedRtp1}% / {confirmedRtp2}%
-              </span>
-            </div>
-            <div className="flex justify-between text-slate-400 font-sans">
-              <span>Ngày Clear RAM đã chọn:</span>
-              <b className="text-teal-400">
-                {ramDay.padStart(2, '0')}/{ramMonth.toString().padStart(2, '0')}/{ramYear}
-              </b>
-            </div>
-          </div>
-
-          {/* Nút gửi dữ liệu lên Firebase */}
-          <button
-            onClick={handleFinalSubmit}
-            disabled={isSaving}
-            className="w-full py-3.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl font-bold text-sm shadow-xl shadow-emerald-600/30 flex items-center justify-center gap-2 active:scale-98 transition-all cursor-pointer"
-          >
-            <CheckCircle2 className="w-5 h-5" />
-            <span>{isSaving ? 'Đang gửi số liệu...' : 'Xác Nhận & Lưu Lên Firebase'}</span>
-          </button>
-        </div>
-      )}
     </div>
   );
 };

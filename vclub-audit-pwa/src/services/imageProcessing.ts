@@ -17,7 +17,34 @@ export interface Rect {
 
 export interface CharCropData {
   box: Rect;
-  tensorData: Float32Array; // 64x64 normalized [-1, 1]
+  tensorData: Float32Array; // 32x32 normalized [-1, 1]
+  isDot: boolean;
+}
+
+// Tái sử dụng vùng nhớ TypedArray (Memory Pool) để loại bỏ hoàn toàn chi phí Garbage Collection (GC)
+let cachedGray: Uint8Array | null = null;
+let cachedIntegral: Int32Array | null = null;
+let cachedBinary: Uint8Array | null = null;
+
+function getGrayBuffer(size: number): Uint8Array {
+  if (!cachedGray || cachedGray.length < size) {
+    cachedGray = new Uint8Array(size);
+  }
+  return cachedGray;
+}
+
+function getIntegralBuffer(size: number): Int32Array {
+  if (!cachedIntegral || cachedIntegral.length < size) {
+    cachedIntegral = new Int32Array(size);
+  }
+  return cachedIntegral;
+}
+
+function getBinaryBuffer(size: number): Uint8Array {
+  if (!cachedBinary || cachedBinary.length < size) {
+    cachedBinary = new Uint8Array(size);
+  }
+  return cachedBinary;
 }
 
 /**
@@ -25,12 +52,13 @@ export interface CharCropData {
  */
 export function toGrayscale(imageData: ImageData): Uint8Array {
   const { width, height, data } = imageData;
-  const gray = new Uint8Array(width * height);
+  const size = width * height;
+  const gray = getGrayBuffer(size);
   for (let i = 0, j = 0; i < data.length; i += 4, j++) {
     // 0.299 * R + 0.587 * G + 0.114 * B
     gray[j] = ((data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8) & 0xff;
   }
-  return gray;
+  return gray.subarray(0, size);
 }
 
 /**
@@ -39,7 +67,8 @@ export function toGrayscale(imageData: ImageData): Uint8Array {
  */
 export function computeIntegralImage(gray: Uint8Array, width: number, height: number): Int32Array {
   const stride = width + 1;
-  const integral = new Int32Array((width + 1) * (height + 1));
+  const size = (width + 1) * (height + 1);
+  const integral = getIntegralBuffer(size);
 
   for (let y = 0; y < height; y++) {
     let rowSum = 0;
@@ -52,7 +81,7 @@ export function computeIntegralImage(gray: Uint8Array, width: number, height: nu
       integral[intYStride + (x + 1)] = integral[prevIntYStride + (x + 1)] + rowSum;
     }
   }
-  return integral;
+  return integral.subarray(0, size);
 }
 
 /**
@@ -68,7 +97,8 @@ export function adaptiveThreshold(
   cVal = 12
 ): Uint8Array {
   const integral = computeIntegralImage(gray, width, height);
-  const binary = new Uint8Array(width * height);
+  const size = width * height;
+  const binary = getBinaryBuffer(size);
   const stride = width + 1;
   const half = Math.floor(blockSize / 2);
 
@@ -86,7 +116,7 @@ export function adaptiveThreshold(
       const boxW = x2 - x1 + 1;
       const count = boxW * boxH;
 
-      // Tổng pixel trong vùng = I(x2+1, y2+1) - I(x1, y2+1) - I(x2+1, y1) + I(x1, y1)
+      // Tổng pixel trong vùng = I(x2+1, y2+1) - I(x2+1, x1) - I(x1, y2+1) + I(x1, y1)
       const sum =
         integral[intY2 + (x2 + 1)] -
         integral[intY2 + x1] -
@@ -101,7 +131,7 @@ export function adaptiveThreshold(
     }
   }
 
-  return binary;
+  return binary.subarray(0, size);
 }
 
 /**
@@ -307,19 +337,20 @@ export function extractLines(
 }
 
 /**
- * 6. Tách từng ký tự trong một dòng, resize giữ nguyên tỉ lệ vào khung 64x64
- * và chuẩn hóa tensor về [-1, 1]
+ * 6. Tách từng ký tự trong một dòng, resize giữ nguyên tỉ lệ vào khung 32x32
+ * lấy trực tiếp từ ảnh xám tự nhiên (grayImage) và chuẩn hóa tensor về [-1, 1]
  */
 export function extractCharactersFromLine(
   cleanBinary: Uint8Array,
   imgWidth: number,
   lineBox: Rect,
-  scaleFactor = 1.0
+  scaleFactor = 1.0,
+  grayImage?: Uint8Array
 ): CharCropData[] {
   const { x: lx, y: ly, w: lw, h: lh } = lineBox;
   if (lw <= 0 || lh <= 0) return [];
 
-  // Tính Vertical Projection Profile trong dải dòng
+  // Tính Vertical Projection Profile trong dải dòng từ binary
   const vpp = new Int32Array(lw);
   for (let x = 0; x < lw; x++) {
     let count = 0;
@@ -418,69 +449,72 @@ export function extractCharactersFromLine(
   }
 
   const results: CharCropData[] = [];
-  const TARGET_SIZE = 64;
-  const dotLimitH = Math.max(6, Math.floor(lh * 0.35));
-  const dotLimitW = Math.max(6, Math.floor(lh * 0.35));
+  const TARGET_SIZE = 32;
+  const dotLimitH = Math.max(5, Math.floor(lh * 0.35));
+  const dotLimitW = Math.max(5, Math.floor(lh * 0.35));
 
   for (const box of merged) {
     if (box.w <= 0 || box.h <= 0) continue;
-
-    // Canvas 64x64 mặc định nền trắng (255)
-    const canvas = new Uint8Array(TARGET_SIZE * TARGET_SIZE);
-    canvas.fill(255);
 
     // Kiểm tra xem có phải là dấu chấm '.' hay không (kích thước rất nhỏ nằm ở đáy)
     const isDot = box.h <= dotLimitH && box.w <= dotLimitW;
 
     if (isDot) {
-      // Đặt dấu chấm vào gần đáy baseline (Y = 46-52)
-      const dw = Math.min(10, Math.max(3, box.w));
-      const dh = Math.min(10, Math.max(3, box.h));
-      const sx = Math.floor((TARGET_SIZE - dw) / 2);
-      const sy = 48;
+      // Dấu chấm: gán cờ isDot = true, tự động gán nhãn '.' mà không cần gọi model ONNX
+      results.push({
+        box,
+        tensorData: new Float32Array(TARGET_SIZE * TARGET_SIZE),
+        isDot: true,
+      });
+      continue;
+    }
 
-      for (let dy = 0; dy < dh; dy++) {
-        const srcY = box.y + Math.floor((dy * box.h) / dh);
-        for (let dx = 0; dx < dw; dx++) {
-          const srcX = box.x + Math.floor((dx * box.w) / dw);
-          canvas[(sy + dy) * TARGET_SIZE + (sx + dx)] =
-            cleanBinary[srcY * imgWidth + srcX];
-        }
-      }
-    } else {
-      // Co giãn giữ nguyên tỉ lệ (Aspect Ratio) vào giữa canvas 64x64
-      const maxCharDim = 50; // Giữ biên đệm viền ngoài
-      let scale = maxCharDim / Math.max(box.h, 1);
-      let newW = Math.max(1, Math.min(56, Math.round(box.w * scale)));
-      let newH = Math.max(1, Math.min(56, Math.round(box.h * scale)));
+    // Co giãn giữ nguyên tỉ lệ (Aspect Ratio) vào giữa canvas 32x32
+    // Đệm viền bằng màu nền xung quanh nét chữ (tương đương resize_with_padding)
+    const canvas = new Uint8Array(TARGET_SIZE * TARGET_SIZE);
+    let fill = 255;
+    if (grayImage) {
+      const p1 = grayImage[box.y * imgWidth + box.x];
+      const p2 = grayImage[box.y * imgWidth + Math.min(imgWidth - 1, box.x + box.w - 1)];
+      const p3 = grayImage[Math.min(grayImage.length - 1, (box.y + box.h - 1) * imgWidth + box.x)];
+      const p4 = grayImage[Math.min(grayImage.length - 1, (box.y + box.h - 1) * imgWidth + Math.min(imgWidth - 1, box.x + box.w - 1))];
+      fill = Math.round((p1 + p2 + p3 + p4) / 4);
+    }
+    canvas.fill(fill);
 
-      if (newW > 56) {
-        scale = 56 / Math.max(box.w, 1);
-        newW = Math.max(1, Math.min(56, Math.round(box.w * scale)));
-        newH = Math.max(1, Math.min(56, Math.round(box.h * scale)));
-      }
+    const maxCharDim = 28; // Giữ biên đệm viền ngoài
+    let scale = maxCharDim / Math.max(box.h, 1);
+    let newW = Math.max(1, Math.min(28, Math.round(box.w * scale)));
+    let newH = Math.max(1, Math.min(28, Math.round(box.h * scale)));
 
-      const sx = Math.floor((TARGET_SIZE - newW) / 2);
-      const sy = Math.floor((TARGET_SIZE - newH) / 2);
+    if (newW > 28) {
+      scale = 28 / Math.max(box.w, 1);
+      newW = Math.max(1, Math.min(28, Math.round(box.w * scale)));
+      newH = Math.max(1, Math.min(28, Math.round(box.h * scale)));
+    }
 
-      for (let dy = 0; dy < newH; dy++) {
-        const srcY = box.y + Math.floor((dy * box.h) / newH);
-        for (let dx = 0; dx < newW; dx++) {
-          const srcX = box.x + Math.floor((dx * box.w) / newW);
-          canvas[(sy + dy) * TARGET_SIZE + (sx + dx)] =
-            cleanBinary[srcY * imgWidth + srcX];
-        }
+    const sx = Math.floor((TARGET_SIZE - newW) / 2);
+    const sy = Math.floor((TARGET_SIZE - newH) / 2);
+
+    // Lấy pixel trực tiếp từ ảnh xám tự nhiên (grayImage) để giữ nguyên độ mịn font & anti-aliasing
+    const sourcePixels = grayImage || cleanBinary;
+
+    for (let dy = 0; dy < newH; dy++) {
+      const srcY = box.y + Math.floor((dy * box.h) / newH);
+      for (let dx = 0; dx < newW; dx++) {
+        const srcX = box.x + Math.floor((dx * box.w) / newW);
+        canvas[(sy + dy) * TARGET_SIZE + (sx + dx)] =
+          sourcePixels[srcY * imgWidth + srcX];
       }
     }
 
-    // Chuẩn hóa tensor float32: (pixel / 255.0 - 0.5) / 0.5 => [-1.0, 1.0]
+    // Chuẩn hóa tensor float32: (pixel / 127.5) - 1.0 => [-1.0, 1.0] (khớp chuẩn PyTorch/ONNX)
     const tensorData = new Float32Array(TARGET_SIZE * TARGET_SIZE);
     for (let i = 0; i < tensorData.length; i++) {
-      const norm = canvas[i] / 255.0;
-      tensorData[i] = (norm - 0.5) / 0.5;
+      tensorData[i] = (canvas[i] / 127.5) - 1.0;
     }
 
-    results.push({ box, tensorData });
+    results.push({ box, tensorData, isDot: false });
   }
 
   return results;
