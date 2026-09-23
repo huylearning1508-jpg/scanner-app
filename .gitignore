@@ -5,3 +5,4 @@ node_modules/
 backup/
 .venv/
 .venv_wsl/
+.firebase/

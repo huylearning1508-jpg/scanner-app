@@ -1,17 +1,17 @@
 /**
  * firebaseConfig.js
  * -----------------------------------------------------------------------
- * Config project Firebase "ocr-rtp" (Realtime Database, region asia-southeast1).
- * apiKey ở đây KHÔNG phải bí mật cần giấu — bảo mật thật sự nằm ở
- * Realtime Database Rules (Firebase Console -> Realtime Database -> Rules).
+ * Cấu hình kết nối Firebase của dự án scanner-app-67176 (Realtime Database asia-southeast1).
+ * Lưu ý: apiKey là định danh client công khai của ứng dụng web,
+ * bảo mật thực tế được quản lý tại database.rules.json.
  * -----------------------------------------------------------------------
  */
 const FIREBASE_CONFIG = {
-    apiKey: "AIzaSyCsq5-3_KVxngvhogfJACE4w2Jl-PtqMeo",
-    authDomain: "ocr-rtp.firebaseapp.com",
-    databaseURL: "https://ocr-rtp-default-rtdb.asia-southeast1.firebasedatabase.app",
-    projectId: "ocr-rtp",
-    storageBucket: "ocr-rtp.firebasestorage.app",
-    messagingSenderId: "508550086071",
-    appId: "1:508550086071:web:fe8d63869ac7db187cfc32"
+    apiKey: "AIzaSyAzl4-DoTSypfTwbXbSJHMuoaamvfWb5q4",
+    authDomain: "scanner-app-67176.firebaseapp.com",
+    projectId: "scanner-app-67176",
+    databaseURL: "https://scanner-app-67176-default-rtdb.asia-southeast1.firebasedatabase.app",
+    storageBucket: "scanner-app-67176.firebasestorage.app",
+    messagingSenderId: "484857526973",
+    appId: "1:484857526973:web:f515d2967e1473066a55d4"
 };

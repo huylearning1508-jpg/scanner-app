@@ -1,12 +1,13 @@
 {
   "rules": {
-    "field_readings": {
-      ".read": "auth != null",
-      ".write": "auth != null"
+    "machines": {
+      ".read": true,
+      ".write": true
     },
-    "$other": {
-      ".read": false,
-      ".write": false
+    "field_readings": {
+      ".read": true,
+      ".write": true,
+      ".indexOn": ["machine_no", "week_number", "confirmed_at"]
     }
   }
 }
