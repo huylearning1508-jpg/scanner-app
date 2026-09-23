@@ -1,9 +1,0 @@
-{
-  "charset": "0123456789.%$",
-  "blank_index": 13,
-  "num_classes": 14,
-  "num_slots": 8,
-  "format": "########",
-  "img_height": 48,
-  "img_width": 192
-}

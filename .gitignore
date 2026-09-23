@@ -1,47 +1,7 @@
-# Virtual Environments
+node_modules/
+.DS_Store
+
+# Bản code cũ giữ trên máy, không đẩy lên GitHub
+backup/
 .venv/
 .venv_wsl/
-venv/
-env/
-ENV/
-
-# Python Cache
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-
-# Large Dataset files
-*.npz
-data/synthetic/*.npz
-data/real/*.png
-data/real/*.jpg
-
-# Node & Frontend
-node_modules/
-**/node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-# Build outputs
-dist/
-**/dist/
-build/
-**/build/
-
-# IDE & Editor files
-.vscode/
-.idea/
-*.swp
-*.swo
-.DS_Store
-Thumbs.db
-
-# Logs & temp files
-*.log
-scratch/
-tmp/
-temp/

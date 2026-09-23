@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>V Club Audit Scanner</title>
+    <link rel="stylesheet" href="css/style.css?v=5" />
+</head>
+<body>
+
+    <nav id="tabBar">
+        <button id="tabBtnData" class="tab-btn">Dữ liệu</button>
+        <button id="tabBtnScan" class="tab-btn active">Quét</button>
+    </nav>
+
+    <!-- ================= TAB: DỮ LIỆU ================= -->
+    <div id="dataTabView" hidden></div>
+
+    <!-- ================= TAB: QUÉT ================= -->
+    <div id="scanTabView">
+
+        <!-- NỬA TRÊN: CAMERA -->
+        <div id="cameraContainer">
+            <video id="video" playsinline autoplay muted></video>
+            <canvas id="liveFilterCanvas" hidden></canvas>
+
+            <canvas id="captureCanvas" hidden></canvas>
+
+            <img id="frozenFrameImage" alt="" hidden />
+            <div id="frozenBorder" hidden></div>
+            <button id="btnSavePhoto" hidden>💾 Lưu ảnh (debug)</button>
+
+            <!-- Khung ngắm: dữ liệu nằm ở nửa bên phải màn hình máy, nên chỉ
+                 khoanh vùng nửa phải (x 50%-100%), không lấy full chiều rộng -->
+            <svg id="guideOverlay" viewBox="0 0 100 100" preserveAspectRatio="none">
+                <rect id="guideRect" x="50" y="30" width="50" height="40" />
+            </svg>
+
+            <div id="headerBar">
+                <div id="headerInfo">
+                    <div id="tvCsvFileName">—</div>
+                    <div id="tvScannedCount">Đã quét: 0 máy</div>
+                    <div id="tvCloudStatus">☁ Firebase: chưa cấu hình</div>
+                </div>
+                <label id="liveFilterToggle" title="Xem trước ảnh đã lọc nền (tuỳ chọn)">
+                    <input type="checkbox" id="chkLiveFilter" /> Bộ lọc
+                </label>
+                <button id="btnEndSession">🛑 Kết thúc phiên</button>
+            </div>
+
+            <button id="btnFlash" title="Bật/tắt đèn flash">💡</button>
+
+            <div id="badgeMachineNumber" hidden></div>
+
+            <div id="tvScanStatus">Đang khởi tạo camera…</div>
+
+            <button id="btnManualCapture" hidden>📸 Chụp tay</button>
+            <button id="btnCameraDiag">🔧 Chẩn đoán camera</button>
+
+            <div id="permissionOverlay" hidden>
+                <p>Ứng dụng cần quyền truy cập Camera để quét thông số máy.</p>
+                <button id="btnGrantPermission">Cấp quyền Camera</button>
+            </div>
+
+            <div id="loadingOverlay" hidden>
+                <p id="loadingText">Đang tải model nhận diện (lần đầu có thể mất vài giây)…</p>
+                <button id="btnRetryLoad" hidden>Thử lại</button>
+            </div>
+        </div>
+
+        <!-- NỬA DƯỚI: DỮ LIỆU & THAO TÁC -->
+        <div id="dataPanel">
+
+            <label class="field-label" for="etMachineId">Machine No</label>
+            <input id="etMachineId" type="text" inputmode="numeric" placeholder="Machine No" />
+
+            <div class="row2">
+                <div class="col">
+                    <label class="field-label" for="etParamX">RTP1 (%)</label>
+                    <input id="etParamX" type="text" inputmode="decimal" placeholder="RTP1 (%)" />
+                </div>
+                <div class="col">
+                    <label class="field-label" for="etParamY">RTP2 (%)</label>
+                    <input id="etParamY" type="text" inputmode="decimal" placeholder="RTP2 (%)" />
+                </div>
+            </div>
+
+            <label class="field-label">Ngày Clear RAM</label>
+            <div class="row3">
+                <input id="etDay" type="text" inputmode="numeric" placeholder="Ngày" />
+                <select id="selMonth">
+                    <option value="1">Jan</option><option value="2">Feb</option><option value="3">Mar</option>
+                    <option value="4">Apr</option><option value="5">May</option><option value="6">Jun</option>
+                    <option value="7">Jul</option><option value="8">Aug</option><option value="9">Sep</option>
+                    <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
+                </select>
+                <input id="etYear" type="text" inputmode="numeric" placeholder="Năm" />
+            </div>
+
+            <div class="row2">
+                <button id="btnRescan" class="btn btn-secondary">↺ Quét lại</button>
+                <button id="btnConfirm" class="btn btn-primary btn-wide">Tiếp tục quét ngày Clear RAM ➔</button>
+            </div>
+
+            <div id="postSessionPanel" hidden>
+                <button id="btnShareCsv" class="btn btn-primary btn-full">Chia sẻ file CSV</button>
+                <button id="btnNewSession" class="btn btn-secondary btn-full">Tạo phiên làm việc mới</button>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- OpenCV.js: threshold + dedither + tách dòng/ký tự, chạy WASM client-side -->
+    <script async src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@5.0.0-release.1/dist/opencv.js"></script>
+    <!-- onnxruntime-web: chạy model digit_model.onnx (32x32, 12 lớp) client-side -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js"></script>
+
+    <!-- Firebase (compat SDK): Realtime Database + Anonymous Auth -->
+    <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-database-compat.js"></script>
+
+    <script src="js/firebaseConfig.js?v=4"></script>
+    <script src="js/firebaseManager.js?v=4"></script>
+    <script src="js/imageProcessing.js?v=5"></script>
+    <script src="js/digitClassifier.js?v=5"></script>
+    <script src="js/ocrParser.js?v=4"></script>
+    <script src="js/ocrEngine.js?v=7"></script>
+    <script src="js/csvManager.js?v=4"></script>
+    <script src="js/cameraController.js?v=7"></script>
+    <script src="js/dataView.js?v=4"></script>
+    <script src="js/util.js?v=4"></script>
+    <script src="js/main.js?v=5"></script>
+</body>
+</html>

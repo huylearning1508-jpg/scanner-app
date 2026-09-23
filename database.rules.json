@@ -1,0 +1,12 @@
+{
+  "rules": {
+    "field_readings": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "$other": {
+      ".read": false,
+      ".write": false
+    }
+  }
+}
