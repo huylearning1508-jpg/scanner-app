@@ -4,7 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>V Club Audit Scanner</title>
-    <link rel="stylesheet" href="css/style.css?v=5" />
+    <link rel="stylesheet" href="css/style.css?v=6" />
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function(regs) {
+                for (var r of regs) r.unregister();
+            });
+            if ('caches' in window) {
+                caches.keys().then(function(keys) {
+                    keys.forEach(function(k) { caches.delete(k); });
+                });
+            }
+        }
+    </script>
 </head>
 <body>
 
