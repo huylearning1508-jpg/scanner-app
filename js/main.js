@@ -1,10 +1,14 @@
 /**
  * main.js
  * -----------------------------------------------------------------------
- * Điều phối máy trạng thái quét 2 bước/máy (giữ nguyên tinh thần bản cũ),
- * nhưng nối với OcrEngine mới (model số + anchor-"$", không còn Tesseract),
- * thêm: tab Dữ liệu, dropdown chọn tháng tay (chưa có model tháng), toggle
- * bộ lọc live tuỳ chọn.
+ * Điều phối máy trạng thái quét 2 bước/máy:
+ * Hỗ trợ 2 chế độ quét độc lập để so sánh & debug:
+ *   1. Chế độ YOLO AI (Tab 1): Sử dụng YOLO11n (roi_detect.onnx) để tự động
+ *      phát hiện vị trí các ô (machine_no, rtp1, rtp2, anchor_denom, datetime),
+ *      vẽ bounding box trực quan và cắt riêng từng ô đưa vào DigitClassifier.
+ *   2. Chế độ Cổ điển (Tab 2): Giữ nguyên thuật toán lọc hình thái học C++,
+ *      tách dòng VPP và neo ký tự "$" theo khung ngắm cố định.
+ *   3. Tab Dữ liệu (Tab 3): Bảng kiểm toán realtime từ Firebase Realtime DB.
  * -----------------------------------------------------------------------
  */
 
@@ -20,8 +24,9 @@ const ScanStep = Object.freeze({
     const $ = (id) => document.getElementById(id);
 
     // ---- Tabs ----
+    const tabBtnYolo = $('tabBtnYolo');
+    const tabBtnClassic = $('tabBtnClassic');
     const tabBtnData = $('tabBtnData');
-    const tabBtnScan = $('tabBtnScan');
     const dataTabView = $('dataTabView');
     const scanTabView = $('scanTabView');
 
@@ -29,6 +34,11 @@ const ScanStep = Object.freeze({
     const videoEl = $('video');
     const liveFilterCanvas = $('liveFilterCanvas');
     const chkLiveFilter = $('chkLiveFilter');
+    const liveFilterToggle = $('liveFilterToggle');
+    const guideOverlay = $('guideOverlay');
+    const yoloCanvasOverlay = $('yoloCanvasOverlay');
+    const yoloStatsBadge = $('yoloStatsBadge');
+
     const captureCanvas = $('captureCanvas');
     const frozenImg = $('frozenFrameImage');
     const frozenBorder = $('frozenBorder');
@@ -63,6 +73,11 @@ const ScanStep = Object.freeze({
     let scannedCount = 0;
     let activeMachineNo = '';
     let engineStarted = false;
+    let activeMode = 'yolo'; // 'yolo' | 'classic' | 'data'
+
+    let yoloLoopRunning = false;
+    let yoloLoopHandle = null;
+    let isProcessingYoloFrame = false;
 
     function pad2(n) { return String(n).padStart(2, '0'); }
     function nowScanTime() {
@@ -72,25 +87,61 @@ const ScanStep = Object.freeze({
 
     // ============================== TABS ==============================
 
-    function showScanTab() {
-        tabBtnScan.classList.add('active');
+    function showYoloTab() {
+        activeMode = 'yolo';
+        tabBtnYolo.classList.add('active');
+        tabBtnClassic.classList.remove('active');
         tabBtnData.classList.remove('active');
         scanTabView.hidden = false;
         dataTabView.hidden = true;
         DataView.stop();
+
+        if (guideOverlay) guideOverlay.hidden = true;
+        if (yoloCanvasOverlay) yoloCanvasOverlay.hidden = false;
+        if (yoloStatsBadge) yoloStatsBadge.hidden = false;
+        if (liveFilterToggle) liveFilterToggle.hidden = true;
+        if (liveFilterCanvas) liveFilterCanvas.hidden = true;
+
+        OcrEngine.setPaused(true);
+        startYoloLoop();
+        updateStatusUi();
+    }
+
+    function showClassicTab() {
+        activeMode = 'classic';
+        tabBtnClassic.classList.add('active');
+        tabBtnYolo.classList.remove('active');
+        tabBtnData.classList.remove('active');
+        scanTabView.hidden = false;
+        dataTabView.hidden = true;
+        DataView.stop();
+
+        if (guideOverlay) guideOverlay.hidden = false;
+        if (yoloCanvasOverlay) yoloCanvasOverlay.hidden = true;
+        if (yoloStatsBadge) yoloStatsBadge.hidden = true;
+        if (liveFilterToggle) liveFilterToggle.hidden = false;
+        if (liveFilterCanvas) liveFilterCanvas.hidden = !chkLiveFilter.checked;
+
+        stopYoloLoop();
         OcrEngine.setPaused(currentStep === ScanStep.STEP1_FROZEN || currentStep === ScanStep.STEP2_FROZEN || currentStep === ScanStep.SESSION_ENDED);
+        updateStatusUi();
     }
 
     function showDataTab() {
+        activeMode = 'data';
         tabBtnData.classList.add('active');
-        tabBtnScan.classList.remove('active');
+        tabBtnYolo.classList.remove('active');
+        tabBtnClassic.classList.remove('active');
         dataTabView.hidden = false;
         scanTabView.hidden = true;
+
+        stopYoloLoop();
         OcrEngine.setPaused(true);
         DataView.start(dataTabView);
     }
 
-    tabBtnScan.addEventListener('click', showScanTab);
+    tabBtnYolo.addEventListener('click', showYoloTab);
+    tabBtnClassic.addEventListener('click', showClassicTab);
     tabBtnData.addEventListener('click', showDataTab);
 
     // ============================== KHỞI TẠO ==============================
@@ -124,26 +175,38 @@ const ScanStep = Object.freeze({
         await beginNewSession();
 
         engineStarted = true;
+
+        // Vòng lặp quét chế độ Cổ điển
         OcrEngine.startLoop(
             () => CameraController.getVideoElement() || CameraController.captureFrame(),
             () => (currentStep === ScanStep.STEP1_SCANNING ? 'step1' : 'step2'),
-            (rows, step) => handleOcrResult(rows, step),
-            (previewCanvas) => drawLiveFilter(previewCanvas)
+            (rows, step) => {
+                if (activeMode === 'classic') handleOcrResult(rows, step);
+            },
+            (previewCanvas) => {
+                if (activeMode === 'classic') drawLiveFilter(previewCanvas);
+            }
         );
+
+        // Mặc định khởi động chế độ YOLO
+        showYoloTab();
     }
 
     /**
-     * Khởi tạo OcrEngine (OpenCV.js + model số). Không dùng alert() chặn UI
-     * khi lỗi (quan sát thực tế trên iOS: alert() làm cảm giác app "đứng
-     * hình") — thay bằng thông báo + nút Thử lại ngay trong loadingOverlay.
+     * Khởi tạo OcrEngine (OpenCV.js + model số 32x32) và YOLO detector (YOLO11n)
      */
     async function initOcrEngineWithRetry() {
         loadingOverlay.hidden = false;
         btnRetryLoad.hidden = true;
         loadingText.className = '';
-        loadingText.textContent = 'Đang tải model nhận diện (lần đầu có thể mất vài giây)…';
+        loadingText.textContent = 'Đang tải model nhận diện & YOLO (lần đầu có thể mất vài giây)…';
         try {
             await OcrEngine.init();
+            try {
+                await YoloDetector.init();
+            } catch (yErr) {
+                console.warn('[Bootstrap] YOLO khởi tạo chậm hoặc lỗi:', yErr);
+            }
             loadingOverlay.hidden = true;
             return true;
         } catch (e) {
@@ -166,6 +229,240 @@ const ScanStep = Object.freeze({
         OcrEngine.setLiveFilterEnabled(on);
         liveFilterCanvas.hidden = !on;
     });
+
+    // ============================== VÒNG LẶP YOLO AI ==============================
+
+    function startYoloLoop() {
+        if (yoloLoopRunning) return;
+        yoloLoopRunning = true;
+        scheduleNextYoloTick();
+    }
+
+    function stopYoloLoop() {
+        yoloLoopRunning = false;
+        if (yoloLoopHandle) {
+            clearTimeout(yoloLoopHandle);
+            yoloLoopHandle = null;
+        }
+        clearYoloCanvas();
+    }
+
+    function clearYoloCanvas() {
+        if (!yoloCanvasOverlay) return;
+        const ctx = yoloCanvasOverlay.getContext('2d');
+        ctx.clearRect(0, 0, yoloCanvasOverlay.width, yoloCanvasOverlay.height);
+    }
+
+    function scheduleNextYoloTick() {
+        if (!yoloLoopRunning || activeMode !== 'yolo') return;
+        yoloLoopHandle = setTimeout(runYoloTick, 40);
+    }
+
+    async function runYoloTick() {
+        if (!yoloLoopRunning || activeMode !== 'yolo') return;
+
+        if (currentStep === ScanStep.STEP1_FROZEN || currentStep === ScanStep.STEP2_FROZEN || currentStep === ScanStep.SESSION_ENDED) {
+            scheduleNextYoloTick();
+            return;
+        }
+
+        const video = CameraController.getVideoElement();
+        if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
+            scheduleNextYoloTick();
+            return;
+        }
+
+        if (isProcessingYoloFrame) {
+            scheduleNextYoloTick();
+            return;
+        }
+
+        isProcessingYoloFrame = true;
+        try {
+            const { boxes, durationMs, frameWidth, frameHeight } = await YoloDetector.detect(video, 0.40);
+
+            // 1. Vẽ Bounding Boxes trực quan lên overlay canvas
+            drawYoloBoxes(boxes, video, frameWidth, frameHeight);
+
+            // 2. Cập nhật nhãn HUD thông số
+            if (yoloStatsBadge) {
+                yoloStatsBadge.textContent = `⚡ YOLO: ${durationMs}ms | ${boxes.length} vùng`;
+            }
+
+            // 3. Xử lý nhận diện dựa theo bước hiện tại
+            if (currentStep === ScanStep.STEP1_SCANNING) {
+                await processYoloStep1(boxes, video);
+            } else if (currentStep === ScanStep.STEP2_SCANNING) {
+                await processYoloStep2(boxes, video);
+            }
+        } catch (err) {
+            console.warn('[YOLO Tick] Lỗi xử lý khung hình:', err);
+        } finally {
+            isProcessingYoloFrame = false;
+            scheduleNextYoloTick();
+        }
+    }
+
+    /**
+     * Vẽ bounding boxes trực quan với màu sắc riêng cho từng loại vùng
+     */
+    function drawYoloBoxes(boxes, video, frameWidth, frameHeight) {
+        if (!yoloCanvasOverlay) return;
+        const rect = video.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+
+        if (yoloCanvasOverlay.width !== rect.width || yoloCanvasOverlay.height !== rect.height) {
+            yoloCanvasOverlay.width = rect.width;
+            yoloCanvasOverlay.height = rect.height;
+        }
+
+        const ctx = yoloCanvasOverlay.getContext('2d');
+        ctx.clearRect(0, 0, rect.width, rect.height);
+
+        if (!boxes || boxes.length === 0) return;
+
+        const scale = Math.max(rect.width / frameWidth, rect.height / frameHeight);
+        const originX = (rect.width - frameWidth * scale) / 2;
+        const originY = (rect.height - frameHeight * scale) / 2;
+
+        for (const b of boxes) {
+            const [x1, y1, x2, y2] = b.bbox;
+            const dispX = originX + x1 * scale;
+            const dispY = originY + y1 * scale;
+            const dispW = (x2 - x1) * scale;
+            const dispH = (y2 - y1) * scale;
+
+            ctx.strokeStyle = b.color;
+            ctx.lineWidth = 2.5;
+
+            if (b.class === 'roi_block') {
+                ctx.setLineDash([6, 4]);
+            } else {
+                ctx.setLineDash([]);
+            }
+
+            // Vẽ viền hộp
+            ctx.strokeRect(dispX, dispY, dispW, dispH);
+
+            // Vẽ nhãn pill
+            const labelText = `${b.label} ${(b.score * 100).toFixed(0)}%`;
+            ctx.font = 'bold 11px sans-serif';
+            const textWidth = ctx.measureText(labelText).width;
+            ctx.fillStyle = b.color;
+            ctx.fillRect(dispX, Math.max(0, dispY - 18), textWidth + 8, 18);
+
+            ctx.fillStyle = '#000000';
+            ctx.fillText(labelText, dispX + 4, Math.max(13, dispY - 4));
+        }
+        ctx.setLineDash([]);
+    }
+
+    /**
+     * Cắt ảnh từ vùng bounding box trên video gốc
+     */
+    function cropBoxFromVideo(video, bbox) {
+        const [x1, y1, x2, y2] = bbox;
+        const w = Math.max(1, x2 - x1);
+        const h = Math.max(1, y2 - y1);
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(video, x1, y1, w, h, 0, 0, w, h);
+        return c;
+    }
+
+    /**
+     * Bước 1 (YOLO): Đọc Machine No, RTP1, RTP2 từ các ô đã phát hiện
+     */
+    async function processYoloStep1(boxes, video) {
+        const boxMach = boxes.find((b) => b.class === 'machine_no' && b.score >= 0.45);
+        const boxRtp1 = boxes.find((b) => b.class === 'rtp1' && b.score >= 0.45);
+        const boxRtp2 = boxes.find((b) => b.class === 'rtp2' && b.score >= 0.45);
+
+        if (!boxMach || (!boxRtp1 && !boxRtp2)) return;
+
+        const ocrStart = performance.now();
+        const [resMach, resRtp1, resRtp2] = await Promise.all([
+            boxMach ? OcrEngine.readCropText(cropBoxFromVideo(video, boxMach.bbox), { isNumericOnly: true }) : { text: '', confidence: 0 },
+            boxRtp1 ? OcrEngine.readCropText(cropBoxFromVideo(video, boxRtp1.bbox)) : { text: '', confidence: 0 },
+            boxRtp2 ? OcrEngine.readCropText(cropBoxFromVideo(video, boxRtp2.bbox)) : { text: '', confidence: 0 }
+        ]);
+        const ocrMs = Math.round(performance.now() - ocrStart);
+
+        if (yoloStatsBadge) {
+            yoloStatsBadge.textContent = `⚡ YOLO: ~30ms | OCR: ${ocrMs}ms`;
+        }
+
+        // Bóc tách Machine Number
+        const machDigits = resMach.text.replace(/[^0-9]/g, '');
+        if (!machDigits) return;
+        const machNo = Number(machDigits);
+        if (Number.isNaN(machNo) || machNo < OcrParser.MACHINE_NO_MIN || machNo > OcrParser.MACHINE_NO_MAX) return;
+
+        // Bóc tách RTP1
+        let rtp1Val = null;
+        let rtp1Auto = false;
+        if (boxRtp1 && resRtp1.text) {
+            const r1Digits = resRtp1.text.replace(/[^0-9]/g, '');
+            if (resRtp1.text.includes('.')) {
+                const m = resRtp1.text.match(/[0-9]+\.[0-9]+/);
+                if (m) rtp1Val = Number(m[0]);
+            } else if (r1Digits.length > 2) {
+                const fixed = OcrParser.fixMissingDecimalForRtp(r1Digits);
+                rtp1Val = fixed.value;
+                rtp1Auto = fixed.corrected;
+            }
+        }
+
+        // Bóc tách RTP2
+        let rtp2Val = null;
+        let rtp2Auto = false;
+        if (boxRtp2 && resRtp2.text) {
+            const r2Digits = resRtp2.text.replace(/[^0-9]/g, '');
+            if (resRtp2.text.includes('.')) {
+                const m = resRtp2.text.match(/[0-9]+\.[0-9]+/);
+                if (m) rtp2Val = Number(m[0]);
+            } else if (r2Digits.length > 2) {
+                const fixed = OcrParser.fixMissingDecimalForRtp(r2Digits);
+                rtp2Val = fixed.value;
+                rtp2Auto = fixed.corrected;
+            }
+        }
+
+        const validRtp1 = rtp1Val !== null && rtp1Val >= OcrParser.RTP_MIN && rtp1Val <= OcrParser.RTP_MAX;
+        const validRtp2 = rtp2Val !== null && rtp2Val >= OcrParser.RTP_MIN && rtp2Val <= OcrParser.RTP_MAX;
+
+        if (validRtp1 && validRtp2) {
+            onStep1Captured({
+                machineNo: machNo,
+                rtp1: rtp1Val,
+                rtp2: rtp2Val,
+                autoCorrected: { rtp1: rtp1Auto, rtp2: rtp2Auto },
+                allValid: true
+            });
+        }
+    }
+
+    /**
+     * Bước 2 (YOLO): Đọc ngày Clear RAM từ ô datetime nếu có
+     */
+    async function processYoloStep2(boxes, video) {
+        const boxDate = boxes.find((b) => b.class === 'datetime' && b.score >= 0.40);
+        if (!boxDate) return;
+
+        const cropCanvas = cropBoxFromVideo(video, boxDate.bbox);
+        const rows = await OcrEngine.processFrame(cropCanvas, { tokenizeRows: true });
+        if (rows && rows.length > 0) {
+            for (const row of rows) {
+                const result = OcrParser.parseStep2(row.tokens);
+                if (result) {
+                    onStep2Captured(result);
+                    break;
+                }
+            }
+        }
+    }
 
     // ============================== ĐỒNG BỘ FIREBASE ==============================
 
@@ -214,10 +511,8 @@ const ScanStep = Object.freeze({
         return true;
     }
 
-    // ============================== XỬ LÝ KẾT QUẢ NHẬN DIỆN ==============================
+    // ============================== XỬ LÝ KẾT QUẢ NHẬN DIỆN (CHẾ ĐỘ CỔ ĐIỂN) ==============================
 
-    // Bật để xem log dòng/độ tin cậy pipeline đọc được mỗi lần thử — hữu ích
-    // khi cần chẩn đoán tại sao không nhận diện ra số trên 1 ảnh thật cụ thể.
     const DEBUG_LOG_ROWS = true;
 
     function logRecognizedRows(label, rows) {
@@ -263,16 +558,34 @@ const ScanStep = Object.freeze({
         updateStatusUi();
     }
 
-    /**
-     * Nút "Chụp tay" — dự phòng khi auto-detect gặp khó (mờ/loá dai dẳng).
-     * Thử chạy luôn pipeline nhận diện trên khung hiện tại; nếu ra kết quả
-     * hợp lệ thì điền sẵn như auto-detect, nếu không vẫn đóng băng để nhân
-     * viên tự nhìn ảnh gõ tay — không để nhân viên bị kẹt chờ vô hạn.
-     */
     async function onManualCaptureClicked() {
         const frame = CameraController.captureFrame();
         if (!frame) return;
 
+        if (activeMode === 'yolo') {
+            try {
+                const { boxes } = await YoloDetector.detect(frame, 0.35);
+                if (currentStep === ScanStep.STEP1_SCANNING) {
+                    await processYoloStep1(boxes, frame);
+                } else if (currentStep === ScanStep.STEP2_SCANNING) {
+                    await processYoloStep2(boxes, frame);
+                }
+            } catch (e) {
+                console.error('Lỗi nhận diện YOLO khi chụp tay:', e);
+            }
+            if (currentStep === ScanStep.STEP1_SCANNING) {
+                freezePreview();
+                currentStep = ScanStep.STEP1_FROZEN;
+                updateStatusUi();
+            } else if (currentStep === ScanStep.STEP2_SCANNING) {
+                freezePreview();
+                currentStep = ScanStep.STEP2_FROZEN;
+                updateStatusUi();
+            }
+            return;
+        }
+
+        // Chế độ Cổ điển
         if (currentStep === ScanStep.STEP1_SCANNING) {
             let result = null;
             try {
@@ -320,7 +633,6 @@ const ScanStep = Object.freeze({
         btnSavePhoto.hidden = false;
     }
 
-    /** Bản beta: cho tải ảnh gốc vừa chụp về để debug pipeline offline (xem README/tools/). */
     function onSavePhotoClicked() {
         if (!frozenImg.src) return;
         const a = document.createElement('a');
@@ -337,7 +649,9 @@ const ScanStep = Object.freeze({
         frozenImg.removeAttribute('src');
         frozenBorder.hidden = true;
         btnSavePhoto.hidden = true;
-        OcrEngine.setPaused(false);
+        if (activeMode === 'classic') {
+            OcrEngine.setPaused(false);
+        }
     }
 
     // ============================== SỰ KIỆN CLICK ==============================
@@ -490,6 +804,7 @@ const ScanStep = Object.freeze({
         CsvManager.endSession();
         currentStep = ScanStep.SESSION_ENDED;
         OcrEngine.setPaused(true);
+        stopYoloLoop();
         hideBadge();
         postSessionPanel.hidden = false;
         updateStatusUi();
@@ -544,21 +859,23 @@ const ScanStep = Object.freeze({
         const scanning = currentStep === ScanStep.STEP1_SCANNING || currentStep === ScanStep.STEP2_SCANNING;
         btnManualCapture.hidden = !scanning;
 
+        const modeLabel = activeMode === 'yolo' ? '[YOLO AI]' : '[Cổ điển]';
+
         switch (currentStep) {
             case ScanStep.STEP1_SCANNING:
-                tvScanStatus.textContent = 'Bước 1/2 — Đang quét thông số máy… (hoặc bấm Chụp tay)';
+                tvScanStatus.textContent = `${modeLabel} Bước 1/2 — Đang quét thông số máy… (hoặc bấm Chụp tay)`;
                 setActionButtonsEnabled(false);
                 break;
             case ScanStep.STEP1_FROZEN:
-                tvScanStatus.textContent = 'Đã bắt được thông số. Kiểm tra (sửa tay nếu cần) và bấm Tiếp tục.';
+                tvScanStatus.textContent = `${modeLabel} Đã bắt được thông số. Kiểm tra và bấm Tiếp tục.`;
                 setActionButtonsEnabled(true);
                 break;
             case ScanStep.STEP2_SCANNING:
-                tvScanStatus.textContent = `Bước 2/2 — Đang quét ngày Clear RAM máy #${activeMachineNo}… (hoặc bấm Chụp tay)`;
+                tvScanStatus.textContent = `${modeLabel} Bước 2/2 — Đang quét ngày Clear RAM máy #${activeMachineNo}…`;
                 setActionButtonsEnabled(false);
                 break;
             case ScanStep.STEP2_FROZEN:
-                tvScanStatus.textContent = 'Đã bắt được ngày (hoặc trống nếu chưa đọc được — nhìn ảnh gõ tay). Chọn tháng và bấm Xác nhận.';
+                tvScanStatus.textContent = `${modeLabel} Đã bắt được ngày. Chọn tháng và bấm Xác nhận.`;
                 setActionButtonsEnabled(true);
                 break;
             case ScanStep.SESSION_ENDED:
@@ -573,6 +890,7 @@ const ScanStep = Object.freeze({
     window.addEventListener('beforeunload', () => {
         CameraController.release();
         OcrEngine.stopLoop();
+        stopYoloLoop();
     });
 
     document.addEventListener('DOMContentLoaded', bootstrap);

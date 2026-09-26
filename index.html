@@ -21,8 +21,9 @@
 <body>
 
     <nav id="tabBar">
-        <button id="tabBtnData" class="tab-btn">Dữ liệu</button>
-        <button id="tabBtnScan" class="tab-btn active">Quét</button>
+        <button id="tabBtnYolo" class="tab-btn active">⚡ Quét (YOLO)</button>
+        <button id="tabBtnClassic" class="tab-btn">🔍 Quét (Cổ điển)</button>
+        <button id="tabBtnData" class="tab-btn">📊 Dữ liệu</button>
     </nav>
 
     <!-- ================= TAB: DỮ LIỆU ================= -->
@@ -42,11 +43,14 @@
             <div id="frozenBorder" hidden></div>
             <button id="btnSavePhoto" hidden>💾 Lưu ảnh (debug)</button>
 
-            <!-- Khung ngắm: dữ liệu nằm ở nửa bên phải màn hình máy, nên chỉ
-                 khoanh vùng nửa phải (x 50%-100%), không lấy full chiều rộng -->
-            <svg id="guideOverlay" viewBox="0 0 100 100" preserveAspectRatio="none">
+            <!-- Khung ngắm cố định (chế độ Cổ điển) -->
+            <svg id="guideOverlay" viewBox="0 0 100 100" preserveAspectRatio="none" hidden>
                 <rect id="guideRect" x="50" y="30" width="50" height="40" />
             </svg>
+
+            <!-- Lớp vẽ Bounding Box trực quan (chế độ YOLO AI) -->
+            <canvas id="yoloCanvasOverlay"></canvas>
+            <div id="yoloStatsBadge" class="yolo-stats-badge">⚡ YOLO11n: Đang nạp mô hình...</div>
 
             <div id="headerBar">
                 <div id="headerInfo">
@@ -136,8 +140,9 @@
     <script src="js/firebaseManager.js?v=4"></script>
     <script src="js/imageProcessing.js?v=5"></script>
     <script src="js/digitClassifier.js?v=5"></script>
+    <script src="js/yoloDetector.js?v=2"></script>
     <script src="js/ocrParser.js?v=4"></script>
-    <script src="js/ocrEngine.js?v=7"></script>
+    <script src="js/ocrEngine.js?v=8"></script>
     <script src="js/csvManager.js?v=4"></script>
     <script src="js/cameraController.js?v=7"></script>
     <script src="js/dataView.js?v=4"></script>

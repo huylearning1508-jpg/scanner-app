@@ -51,17 +51,48 @@ body {
 
 .tab-btn {
     flex: 1;
-    padding: 12px;
+    padding: 10px 6px;
     background: none;
     border: none;
     color: var(--text-secondary);
-    font-size: 14px;
+    font-size: 13px;
+    font-weight: 600;
     cursor: pointer;
+    white-space: nowrap;
+    text-align: center;
+    transition: color 0.15s, border-color 0.15s;
 }
 
 .tab-btn.active {
-    color: var(--accent);
-    border-bottom: 2px solid var(--accent);
+    color: #00e5ff;
+    border-bottom: 2px solid #00e5ff;
+}
+
+#yoloCanvasOverlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 8;
+}
+
+.yolo-stats-badge {
+    position: absolute;
+    top: 52px;
+    left: 10px;
+    background: rgba(0, 0, 0, 0.75);
+    border: 1px solid rgba(0, 229, 255, 0.5);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    color: #00e5ff;
+    pointer-events: none;
+    z-index: 15;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    transition: opacity 0.2s;
 }
 
 #dataTabView {

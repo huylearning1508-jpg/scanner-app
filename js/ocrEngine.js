@@ -257,12 +257,63 @@ const OcrEngine = (() => {
             }
             clearTimeout(loopHandle);
             loopHandle = null;
+    /**
+     * Đọc chuỗi ký tự từ 1 ô/vùng ảnh cắt riêng lẻ (do YOLO phát hiện)
+     * @param {HTMLCanvasElement} cropCanvas ảnh cắt riêng của ô
+     * @param {{isNumericOnly?: boolean}} options
+     * @returns {Promise<{text: string, confidence: number}>}
+     */
+    async function readCropText(cropCanvas, { isNumericOnly = false } = {}) {
+        if (!cropCanvas || cropCanvas.width < 5 || cropCanvas.height < 5) {
+            return { text: '', confidence: 0 };
+        }
+        const { binMat, grayMat } = ImageProcessing.thresholdAndDedither(cropCanvas);
+        try {
+            const rowBand = { y0: 0, y1: binMat.rows };
+            const tokens = ImageProcessing.segmentCharsIntoTokens(binMat, rowBand, 10000);
+            if (tokens.length === 0 || tokens[0].length === 0) {
+                return { text: '', confidence: 0 };
+            }
+
+            const token = tokens[0];
+            const heights = token.map((box) => {
+                const b = ImageProcessing.tightVerticalBounds(binMat, rowBand, box);
+                return b.y1 - b.y0;
+            });
+            const sortedHeights = [...heights].sort((a, b) => a - b);
+            const medianHeight = sortedHeights[Math.floor(sortedHeights.length / 2)] || 1;
+
+            const allCharImages = [];
+            const slots = [];
+
+            for (let i = 0; i < token.length; i++) {
+                const box = token[i];
+                if (!isNumericOnly && token.length > 1 && heights[i] < medianHeight * 0.45) {
+                    slots.push({ kind: 'dot' });
+                } else {
+                    const batchIndex = allCharImages.length;
+                    allCharImages.push(ImageProcessing.cropCharForClassifier(grayMat, binMat, rowBand, box));
+                    slots.push({ kind: 'char', batchIndex });
+                }
+            }
+
+            if (allCharImages.length === 0) return { text: '', confidence: 0 };
+            const classified = await DigitClassifier.classifyBatch(allCharImages);
+
+            const chars = slots.map((s) => s.kind === 'dot' ? { char: '.', confidence: 1.0 } : classified[s.batchIndex]);
+            let text = chars.map((c) => c.char).join('');
+            const meanConfidence = chars.length ? chars.reduce((sum, c) => sum + c.confidence, 0) / chars.length : 0;
+
+            return { text, confidence: meanConfidence };
+        } finally {
+            binMat.delete();
+            grayMat.delete();
         }
     }
 
     return {
         init, startLoop, stopLoop, setPaused, isPaused,
         setLiveFilterEnabled, isLiveFilterEnabled,
-        processFrame,
+        processFrame, readCropText
     };
 })();
