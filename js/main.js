@@ -246,18 +246,28 @@ const ScanStep = Object.freeze({
             clearTimeout(yoloLoopHandle);
             yoloLoopHandle = null;
         }
-        clearYoloCanvas();
-    }
-
-    function clearYoloCanvas() {
-        if (!yoloCanvasOverlay) return;
-        const ctx = yoloCanvasOverlay.getContext('2d');
-        ctx.clearRect(0, 0, yoloCanvasOverlay.width, yoloCanvasOverlay.height);
     }
 
     function scheduleNextYoloTick() {
         if (!yoloLoopRunning || activeMode !== 'yolo') return;
-        yoloLoopHandle = setTimeout(runYoloTick, 40);
+        yoloLoopHandle = setTimeout(runYoloTick, 35);
+    }
+
+    // Các canvas tái sử dụng — loại bỏ 100% việc tạo mới DOM canvas và tránh Garbage Collection giật lag
+    const cropMachCanvas = document.createElement('canvas');
+    const cropRtp1Canvas = document.createElement('canvas');
+    const cropRtp2Canvas = document.createElement('canvas');
+    const cropDateCanvas = document.createElement('canvas');
+
+    function copyCropToCanvas(srcVideo, bbox, targetCanvas) {
+        const [x1, y1, x2, y2] = bbox;
+        const w = Math.max(1, x2 - x1);
+        const h = Math.max(1, y2 - y1);
+        targetCanvas.width = w;
+        targetCanvas.height = h;
+        const ctx = targetCanvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(srcVideo, x1, y1, w, h, 0, 0, w, h);
+        return targetCanvas;
     }
 
     async function runYoloTick() {
@@ -281,21 +291,13 @@ const ScanStep = Object.freeze({
 
         isProcessingYoloFrame = true;
         try {
-            const { boxes, durationMs, frameWidth, frameHeight } = await YoloDetector.detect(video, 0.40);
+            // Định vị toạ độ các ô bằng YOLO (không tốn tài nguyên vẽ overlay)
+            const { boxes, durationMs } = await YoloDetector.detect(video, 0.35);
 
-            // 1. Vẽ Bounding Boxes trực quan lên overlay canvas
-            drawYoloBoxes(boxes, video, frameWidth, frameHeight);
-
-            // 2. Cập nhật nhãn HUD thông số
-            if (yoloStatsBadge) {
-                yoloStatsBadge.textContent = `⚡ YOLO: ${durationMs}ms | ${boxes.length} vùng`;
-            }
-
-            // 3. Xử lý nhận diện dựa theo bước hiện tại
             if (currentStep === ScanStep.STEP1_SCANNING) {
-                await processYoloStep1(boxes, video);
+                await processYoloStep1(boxes, video, durationMs);
             } else if (currentStep === ScanStep.STEP2_SCANNING) {
-                await processYoloStep2(boxes, video);
+                await processYoloStep2(boxes, video, durationMs);
             }
         } catch (err) {
             console.warn('[YOLO Tick] Lỗi xử lý khung hình:', err);
@@ -306,98 +308,40 @@ const ScanStep = Object.freeze({
     }
 
     /**
-     * Vẽ bounding boxes trực quan với màu sắc riêng cho từng loại vùng
+     * Bước 1 (YOLO): Cắt trực tiếp các ô đã định vị và nạp vào 1 lần chạy GPU duy nhất
      */
-    function drawYoloBoxes(boxes, video, frameWidth, frameHeight) {
-        if (!yoloCanvasOverlay) return;
-        const rect = video.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return;
+    async function processYoloStep1(boxes, video, yoloMs) {
+        const boxMach = boxes.find((b) => b.class === 'machine_no' && b.score >= 0.40);
+        const boxRtp1 = boxes.find((b) => b.class === 'rtp1' && b.score >= 0.40);
+        const boxRtp2 = boxes.find((b) => b.class === 'rtp2' && b.score >= 0.40);
 
-        if (yoloCanvasOverlay.width !== rect.width || yoloCanvasOverlay.height !== rect.height) {
-            yoloCanvasOverlay.width = rect.width;
-            yoloCanvasOverlay.height = rect.height;
-        }
-
-        const ctx = yoloCanvasOverlay.getContext('2d');
-        ctx.clearRect(0, 0, rect.width, rect.height);
-
-        if (!boxes || boxes.length === 0) return;
-
-        const scale = Math.max(rect.width / frameWidth, rect.height / frameHeight);
-        const originX = (rect.width - frameWidth * scale) / 2;
-        const originY = (rect.height - frameHeight * scale) / 2;
-
-        for (const b of boxes) {
-            const [x1, y1, x2, y2] = b.bbox;
-            const dispX = originX + x1 * scale;
-            const dispY = originY + y1 * scale;
-            const dispW = (x2 - x1) * scale;
-            const dispH = (y2 - y1) * scale;
-
-            ctx.strokeStyle = b.color;
-            ctx.lineWidth = 2.5;
-
-            if (b.class === 'roi_block') {
-                ctx.setLineDash([6, 4]);
-            } else {
-                ctx.setLineDash([]);
+        if (!boxMach || (!boxRtp1 && !boxRtp2)) {
+            if (yoloStatsBadge) {
+                yoloStatsBadge.textContent = `⚡ YOLO: ${yoloMs}ms | Đang tìm vị trí ô...`;
             }
-
-            // Vẽ viền hộp
-            ctx.strokeRect(dispX, dispY, dispW, dispH);
-
-            // Vẽ nhãn pill
-            const labelText = `${b.label} ${(b.score * 100).toFixed(0)}%`;
-            ctx.font = 'bold 11px sans-serif';
-            const textWidth = ctx.measureText(labelText).width;
-            ctx.fillStyle = b.color;
-            ctx.fillRect(dispX, Math.max(0, dispY - 18), textWidth + 8, 18);
-
-            ctx.fillStyle = '#000000';
-            ctx.fillText(labelText, dispX + 4, Math.max(13, dispY - 4));
+            return;
         }
-        ctx.setLineDash([]);
-    }
 
-    /**
-     * Cắt ảnh từ vùng bounding box trên video gốc
-     */
-    function cropBoxFromVideo(video, bbox) {
-        const [x1, y1, x2, y2] = bbox;
-        const w = Math.max(1, x2 - x1);
-        const h = Math.max(1, y2 - y1);
-        const c = document.createElement('canvas');
-        c.width = w;
-        c.height = h;
-        const ctx = c.getContext('2d');
-        ctx.drawImage(video, x1, y1, w, h, 0, 0, w, h);
-        return c;
-    }
-
-    /**
-     * Bước 1 (YOLO): Đọc Machine No, RTP1, RTP2 từ các ô đã phát hiện
-     */
-    async function processYoloStep1(boxes, video) {
-        const boxMach = boxes.find((b) => b.class === 'machine_no' && b.score >= 0.45);
-        const boxRtp1 = boxes.find((b) => b.class === 'rtp1' && b.score >= 0.45);
-        const boxRtp2 = boxes.find((b) => b.class === 'rtp2' && b.score >= 0.45);
-
-        if (!boxMach || (!boxRtp1 && !boxRtp2)) return;
+        // Cắt ảnh nhanh vào các canvas tái sử dụng
+        copyCropToCanvas(video, boxMach.bbox, cropMachCanvas);
+        if (boxRtp1) copyCropToCanvas(video, boxRtp1.bbox, cropRtp1Canvas);
+        if (boxRtp2) copyCropToCanvas(video, boxRtp2.bbox, cropRtp2Canvas);
 
         const ocrStart = performance.now();
-        const [resMach, resRtp1, resRtp2] = await Promise.all([
-            boxMach ? OcrEngine.readCropText(cropBoxFromVideo(video, boxMach.bbox), { isNumericOnly: true }) : { text: '', confidence: 0 },
-            boxRtp1 ? OcrEngine.readCropText(cropBoxFromVideo(video, boxRtp1.bbox)) : { text: '', confidence: 0 },
-            boxRtp2 ? OcrEngine.readCropText(cropBoxFromVideo(video, boxRtp2.bbox)) : { text: '', confidence: 0 }
+        // 1 LẦN GỌI GPU WEBGEL BATCH CHO TOÀN BỘ CÁC Ô!
+        const [resMach, resRtp1, resRtp2] = await OcrEngine.readMultipleCrops([
+            { canvas: cropMachCanvas, isNumericOnly: true },
+            { canvas: boxRtp1 ? cropRtp1Canvas : null, isNumericOnly: false },
+            { canvas: boxRtp2 ? cropRtp2Canvas : null, isNumericOnly: false }
         ]);
         const ocrMs = Math.round(performance.now() - ocrStart);
 
         if (yoloStatsBadge) {
-            yoloStatsBadge.textContent = `⚡ YOLO: ~30ms | OCR: ${ocrMs}ms`;
+            yoloStatsBadge.textContent = `⚡ Định vị: ${yoloMs}ms | Đọc: ${ocrMs}ms (Siêu tốc)`;
         }
 
         // Bóc tách Machine Number
-        const machDigits = resMach.text.replace(/[^0-9]/g, '');
+        const machDigits = resMach ? resMach.text.replace(/[^0-9]/g, '') : '';
         if (!machDigits) return;
         const machNo = Number(machDigits);
         if (Number.isNaN(machNo) || machNo < OcrParser.MACHINE_NO_MIN || machNo > OcrParser.MACHINE_NO_MAX) return;
@@ -405,7 +349,7 @@ const ScanStep = Object.freeze({
         // Bóc tách RTP1
         let rtp1Val = null;
         let rtp1Auto = false;
-        if (boxRtp1 && resRtp1.text) {
+        if (boxRtp1 && resRtp1 && resRtp1.text) {
             const r1Digits = resRtp1.text.replace(/[^0-9]/g, '');
             if (resRtp1.text.includes('.')) {
                 const m = resRtp1.text.match(/[0-9]+\.[0-9]+/);
@@ -420,7 +364,7 @@ const ScanStep = Object.freeze({
         // Bóc tách RTP2
         let rtp2Val = null;
         let rtp2Auto = false;
-        if (boxRtp2 && resRtp2.text) {
+        if (boxRtp2 && resRtp2 && resRtp2.text) {
             const r2Digits = resRtp2.text.replace(/[^0-9]/g, '');
             if (resRtp2.text.includes('.')) {
                 const m = resRtp2.text.match(/[0-9]+\.[0-9]+/);
@@ -449,12 +393,12 @@ const ScanStep = Object.freeze({
     /**
      * Bước 2 (YOLO): Đọc ngày Clear RAM từ ô datetime nếu có
      */
-    async function processYoloStep2(boxes, video) {
-        const boxDate = boxes.find((b) => b.class === 'datetime' && b.score >= 0.40);
+    async function processYoloStep2(boxes, video, yoloMs) {
+        const boxDate = boxes.find((b) => b.class === 'datetime' && b.score >= 0.35);
         if (!boxDate) return;
 
-        const cropCanvas = cropBoxFromVideo(video, boxDate.bbox);
-        const rows = await OcrEngine.processFrame(cropCanvas, { tokenizeRows: true });
+        copyCropToCanvas(video, boxDate.bbox, cropDateCanvas);
+        const rows = await OcrEngine.processFrame(cropDateCanvas, { tokenizeRows: true });
         if (rows && rows.length > 0) {
             for (const row of rows) {
                 const result = OcrParser.parseStep2(row.tokens);
@@ -465,6 +409,8 @@ const ScanStep = Object.freeze({
             }
         }
     }
+
+
 
     // ============================== ĐỒNG BỘ FIREBASE ==============================
 

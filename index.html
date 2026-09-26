@@ -44,9 +44,8 @@
                 <rect id="guideRect" x="50" y="30" width="50" height="40" />
             </svg>
 
-            <!-- Lớp vẽ Bounding Box trực quan (chế độ YOLO AI) -->
-            <canvas id="yoloCanvasOverlay"></canvas>
-            <div id="yoloStatsBadge" class="yolo-stats-badge">⚡ YOLO11n: Đang nạp mô hình...</div>
+            <!-- Nhãn trạng thái định vị YOLO AI (không vẽ đè làm chậm máy) -->
+            <div id="yoloStatsBadge" class="yolo-stats-badge">⚡ YOLO AI: Đang định vị vùng...</div>
 
             <div id="headerBar">
                 <div id="headerInfo">
@@ -136,13 +135,13 @@
     <script src="js/firebaseManager.js?v=4"></script>
     <script src="js/imageProcessing.js?v=5"></script>
     <script src="js/digitClassifier.js?v=5"></script>
-    <script src="js/yoloDetector.js?v=2"></script>
+    <script src="js/yoloDetector.js?v=3"></script>
     <script src="js/ocrParser.js?v=4"></script>
-    <script src="js/ocrEngine.js?v=8"></script>
+    <script src="js/ocrEngine.js?v=9"></script>
     <script src="js/csvManager.js?v=4"></script>
     <script src="js/cameraController.js?v=7"></script>
     <script src="js/dataView.js?v=4"></script>
     <script src="js/util.js?v=4"></script>
-    <script src="js/main.js?v=5"></script>
+    <script src="js/main.js?v=6"></script>
 </body>
 </html>

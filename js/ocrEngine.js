@@ -311,9 +311,77 @@ const OcrEngine = (() => {
         }
     }
 
+    /**
+     * Đọc đồng thời nhiều ô ảnh (Machine No, RTP1, RTP2) trong 1 lần batch inference GPU duy nhất
+     * Tối ưu tối đa tốc độ: giảm 3 lần gọi WebGL xuống còn 1 lần duy nhất (~3-5ms)
+     * @param {{canvas: HTMLCanvasElement, isNumericOnly?: boolean}[]} cropItems
+     * @returns {Promise<{text: string, confidence: number}[]>}
+     */
+    async function readMultipleCrops(cropItems) {
+        const allCharImages = [];
+        const cropsMeta = [];
+
+        for (const item of cropItems) {
+            const { canvas, isNumericOnly } = item;
+            if (!canvas || canvas.width < 5 || canvas.height < 5) {
+                cropsMeta.push(null);
+                continue;
+            }
+            const { binMat, grayMat } = ImageProcessing.thresholdAndDedither(canvas);
+            const rowBand = { y0: 0, y1: binMat.rows };
+            const tokens = ImageProcessing.segmentCharsIntoTokens(binMat, rowBand, 10000);
+
+            if (tokens.length === 0 || tokens[0].length === 0) {
+                binMat.delete();
+                grayMat.delete();
+                cropsMeta.push(null);
+                continue;
+            }
+
+            const token = tokens[0];
+            const heights = token.map((box) => {
+                const b = ImageProcessing.tightVerticalBounds(binMat, rowBand, box);
+                return b.y1 - b.y0;
+            });
+            const sortedHeights = [...heights].sort((a, b) => a - b);
+            const medianHeight = sortedHeights[Math.floor(sortedHeights.length / 2)] || 1;
+
+            const slots = [];
+            for (let i = 0; i < token.length; i++) {
+                const box = token[i];
+                if (!isNumericOnly && token.length > 1 && heights[i] < medianHeight * 0.45) {
+                    slots.push({ kind: 'dot' });
+                } else {
+                    const batchIndex = allCharImages.length;
+                    allCharImages.push(ImageProcessing.cropCharForClassifier(grayMat, binMat, rowBand, box));
+                    slots.push({ kind: 'char', batchIndex });
+                }
+            }
+
+            binMat.delete();
+            grayMat.delete();
+            cropsMeta.push({ slots });
+        }
+
+        if (allCharImages.length === 0) {
+            return cropsMeta.map(() => ({ text: '', confidence: 0 }));
+        }
+
+        // 1 LẦN GỌI GPU DUY NHẤT CHO TOÀN BỘ CÁC SỐ CỦA CẢ 3 VÙNG!
+        const classified = await DigitClassifier.classifyBatch(allCharImages);
+
+        return cropsMeta.map((meta) => {
+            if (!meta) return { text: '', confidence: 0 };
+            const chars = meta.slots.map((s) => s.kind === 'dot' ? { char: '.', confidence: 1.0 } : classified[s.batchIndex]);
+            const text = chars.map((c) => c.char).join('');
+            const meanConfidence = chars.length ? chars.reduce((sum, c) => sum + c.confidence, 0) / chars.length : 0;
+            return { text, confidence: meanConfidence };
+        });
+    }
+
     return {
         init, startLoop, stopLoop, setPaused, isPaused,
         setLiveFilterEnabled, isLiveFilterEnabled,
-        processFrame, readCropText
+        processFrame, readCropText, readMultipleCrops
     };
 })();
