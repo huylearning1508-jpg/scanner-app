@@ -56,7 +56,71 @@ const YoloDetector = (() => {
     let letterboxCtx = null;
     let floatInputBuffer = null;
 
-    async function init(modelUrl = 'models/roi_detect.onnx') {
+    async function fetchModelBufferWithCache(url, onProgress) {
+        const CACHE_NAME = 'onnx-model-cache-v2';
+        let cache = null;
+        if ('caches' in window) {
+            try {
+                cache = await caches.open(CACHE_NAME);
+                const match = await cache.match(url);
+                if (match) {
+                    console.log(`[YoloDetector] Nạp ${url} siêu tốc từ CacheStorage`);
+                    if (onProgress) onProgress(100);
+                    return await match.arrayBuffer();
+                }
+            } catch (e) {
+                console.warn('[YoloDetector] Cache read error:', e);
+            }
+        }
+
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} tải ${url}`);
+
+        const totalBytes = Number(resp.headers.get('content-length')) || 10569954;
+        const reader = resp.body ? resp.body.getReader() : null;
+
+        let buffer;
+        if (!reader) {
+            buffer = await resp.arrayBuffer();
+            if (onProgress) onProgress(100);
+        } else {
+            const chunks = [];
+            let receivedBytes = 0;
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+                receivedBytes += value.length;
+                if (onProgress) {
+                    const pct = Math.min(99, Math.round((receivedBytes / totalBytes) * 100));
+                    onProgress(pct);
+                }
+            }
+            const fullArray = new Uint8Array(receivedBytes);
+            let pos = 0;
+            for (const chunk of chunks) {
+                fullArray.set(chunk, pos);
+                pos += chunk.length;
+            }
+            buffer = fullArray.buffer;
+            if (onProgress) onProgress(100);
+        }
+
+        if (cache) {
+            try {
+                const cacheResp = new Response(buffer.slice(0), {
+                    headers: { 'Content-Type': 'application/octet-stream' }
+                });
+                await cache.put(url, cacheResp);
+                console.log(`[YoloDetector] Đã lưu ${url} vào CacheStorage`);
+            } catch (e) {
+                console.warn('[YoloDetector] Cache save error:', e);
+            }
+        }
+        return buffer;
+    }
+
+    async function init(modelUrl = 'models/roi_detect.onnx', onProgress = null) {
         if (session) return true;
         if (isInitializing) return false;
         isInitializing = true;
@@ -74,29 +138,30 @@ const YoloDetector = (() => {
         }
 
         try {
+            const modelBuffer = await fetchModelBufferWithCache(modelUrl, onProgress);
             // Thử khởi tạo với WebGL GPU trước để đạt tốc độ cao nhất (25-45ms)
-            session = await ort.InferenceSession.create(modelUrl, {
-                executionProviders: ['webgl'],
-                graphOptimizationLevel: 'all',
-            });
-            console.log('[YoloDetector] Khởi tạo YOLO11n thành công qua WebGL GPU');
-            isInitializing = false;
-            return true;
-        } catch (gpuErr) {
-            console.warn('[YoloDetector] WebGL không khả dụng, chuyển sang CPU WASM:', gpuErr.message);
             try {
-                session = await ort.InferenceSession.create(modelUrl, {
+                session = await ort.InferenceSession.create(modelBuffer, {
+                    executionProviders: ['webgl'],
+                    graphOptimizationLevel: 'all',
+                });
+                console.log('[YoloDetector] Khởi tạo YOLO11n thành công qua WebGL GPU');
+                isInitializing = false;
+                return true;
+            } catch (gpuErr) {
+                console.warn('[YoloDetector] WebGL không khả dụng, chuyển sang CPU WASM:', gpuErr.message);
+                session = await ort.InferenceSession.create(modelBuffer, {
                     executionProviders: ['wasm'],
                     graphOptimizationLevel: 'all',
                 });
                 console.log('[YoloDetector] Khởi tạo YOLO11n thành công qua CPU WASM');
                 isInitializing = false;
                 return true;
-            } catch (wasmErr) {
-                console.error('[YoloDetector] Lỗi khởi tạo mô hình YOLO:', wasmErr);
-                isInitializing = false;
-                return false;
             }
+        } catch (err) {
+            console.error('[YoloDetector] Lỗi nạp mô hình YOLO:', err);
+            isInitializing = false;
+            return false;
         }
     }
 

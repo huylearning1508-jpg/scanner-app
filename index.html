@@ -6,15 +6,11 @@
     <title>V Club Audit Scanner</title>
     <link rel="stylesheet" href="css/style.css?v=6" />
     <script>
+        // Hủy đăng ký Service Worker cũ của bản PWA trước (nếu có), bảo toàn CacheStorage cho ONNX
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.getRegistrations().then(function(regs) {
                 for (var r of regs) r.unregister();
             });
-            if ('caches' in window) {
-                caches.keys().then(function(keys) {
-                    keys.forEach(function(k) { caches.delete(k); });
-                });
-            }
         }
     </script>
 </head>

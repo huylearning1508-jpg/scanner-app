@@ -54,10 +54,22 @@ const CameraController = (() => {
     async function startCamera() {
         diagLog.length = 0;
         logDiag('bắt đầu getUserMedia');
-        stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { ideal: 'environment' } },
-            audio: false
-        });
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    facingMode: { ideal: 'environment' },
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                },
+                audio: false
+            });
+        } catch (e1) {
+            logDiag('Thử 720p không thành công, dùng fallback: ' + e1.message);
+            stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { ideal: 'environment' } },
+                audio: false
+            });
+        }
         logDiag('getUserMedia thành công, stream.active=' + stream.active);
 
         videoEl.muted = true;

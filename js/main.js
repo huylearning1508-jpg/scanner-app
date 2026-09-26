@@ -166,14 +166,16 @@ const ScanStep = Object.freeze({
 
         btnFlash.style.display = CameraController.isTorchSupported() ? '' : 'none';
 
+        // Hiển thị camera ngay lập tức cho người dùng thấy hình ảnh live
+        showYoloTab();
+        initFirebaseSync();
+        beginNewSession();
+
         const ok = await initOcrEngineWithRetry();
         if (ok) await startScanningAfterEngineReady();
     }
 
     async function startScanningAfterEngineReady() {
-        await initFirebaseSync();
-        await beginNewSession();
-
         engineStarted = true;
 
         // Vòng lặp quét chế độ Cổ điển
@@ -188,25 +190,25 @@ const ScanStep = Object.freeze({
             }
         );
 
-        // Mặc định khởi động chế độ YOLO
-        showYoloTab();
+        if (activeMode === 'yolo') {
+            startYoloLoop();
+        }
     }
 
     /**
-     * Khởi tạo OcrEngine (OpenCV.js + model số 32x32) và YOLO detector (YOLO11n)
+     * Khởi tạo OcrEngine (OpenCV.js + model số 32x32) và YOLO detector song song với tiến trình %
      */
     async function initOcrEngineWithRetry() {
         loadingOverlay.hidden = false;
         btnRetryLoad.hidden = true;
         loadingText.className = '';
-        loadingText.textContent = 'Đang tải model nhận diện & YOLO (lần đầu có thể mất vài giây)…';
+        loadingText.textContent = 'Đang tải model AI (lần đầu có thể mất vài giây)…';
         try {
-            await OcrEngine.init();
-            try {
-                await YoloDetector.init();
-            } catch (yErr) {
-                console.warn('[Bootstrap] YOLO khởi tạo chậm hoặc lỗi:', yErr);
-            }
+            const pOcr = OcrEngine.init();
+            const pYolo = YoloDetector.init('models/roi_detect.onnx', (pct) => {
+                loadingText.textContent = `Đang nạp YOLO AI: ${pct}%...`;
+            });
+            await Promise.all([pOcr, pYolo]);
             loadingOverlay.hidden = true;
             return true;
         } catch (e) {

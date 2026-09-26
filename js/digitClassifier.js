@@ -24,27 +24,48 @@ const DigitClassifier = (() => {
     let session = null;
     let classes = null; // mảng ký tự hiển thị, đã map "dollar"->"$", "percent"->"%"
 
+    async function fetchBufferWithCache(url) {
+        if ('caches' in window) {
+            try {
+                const cache = await caches.open('onnx-model-cache-v2');
+                const match = await cache.match(url);
+                if (match) return await match.arrayBuffer();
+                const resp = await fetch(url);
+                if (resp.ok) {
+                    const cloned = resp.clone();
+                    cache.put(url, cloned).catch(() => {});
+                    return await resp.arrayBuffer();
+                }
+            } catch (e) {
+                console.warn('[DigitClassifier] Cache warning:', e);
+            }
+        }
+        const resp = await fetch(url);
+        return await resp.arrayBuffer();
+    }
+
     async function init(modelUrl = 'models/digit_model.onnx', classesUrl = 'models/classes.json') {
         if (ort.env && ort.env.wasm) {
             ort.env.wasm.simd = true;
-            // Số luồng hợp lý cho điện thoại — tránh chiếm hết CPU khi vẫn
-            // phải render camera preview song song.
             ort.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 2);
         }
 
-        // Ưu tiên WebGL GPU để tăng tốc độ inference lên 3-5ms.
-        // Tự động fallback về WASM nếu thiết bị không hỗ trợ WebGL.
         try {
-            session = await ort.InferenceSession.create(modelUrl, {
-                executionProviders: ['webgl'],
-            });
-            console.log('[DigitClassifier] Khởi tạo thành công với WebGL (GPU Accelerated)');
-        } catch (e) {
-            console.warn('[DigitClassifier] WebGL không khả dụng, tự động fallback sang WASM CPU:', e.message);
-            session = await ort.InferenceSession.create(modelUrl, {
-                executionProviders: ['wasm'],
-            });
-            console.log('[DigitClassifier] Khởi tạo thành công với WASM SIMD (CPU)');
+            const buffer = await fetchBufferWithCache(modelUrl);
+            try {
+                session = await ort.InferenceSession.create(buffer, {
+                    executionProviders: ['webgl'],
+                });
+                console.log('[DigitClassifier] Khởi tạo thành công với WebGL (GPU Accelerated)');
+            } catch (e) {
+                console.warn('[DigitClassifier] WebGL không khả dụng, tự động fallback sang WASM CPU:', e.message);
+                session = await ort.InferenceSession.create(buffer, {
+                    executionProviders: ['wasm'],
+                });
+                console.log('[DigitClassifier] Khởi tạo thành công với WASM SIMD (CPU)');
+            }
+        } catch (loadErr) {
+            console.error('[DigitClassifier] Lỗi tải model số:', loadErr);
         }
 
         const res = await fetch(classesUrl);
