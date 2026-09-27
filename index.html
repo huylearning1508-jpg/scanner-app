@@ -6,10 +6,25 @@
     <title>V Club Audit Scanner</title>
     <link rel="stylesheet" href="css/style.css?v=7" />
     <script>
-        // Hủy đăng ký Service Worker cũ của bản PWA trước (nếu có), bảo toàn CacheStorage cho ONNX
+        // Hủy triệt để Service Worker và cache cũ của trang thường để đồng nhất 100% với trang ẩn danh
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.getRegistrations().then(function(regs) {
+                var hadSw = regs.length > 0;
                 for (var r of regs) r.unregister();
+                if (hadSw && !sessionStorage.getItem('sw_unregistered_v2')) {
+                    sessionStorage.setItem('sw_unregistered_v2', '1');
+                    if ('caches' in window) {
+                        caches.keys().then(function(names) {
+                            for (var name of names) {
+                                if (name !== 'onnx-model-cache-v4') caches.delete(name);
+                            }
+                        }).finally(function() {
+                            window.location.reload();
+                        });
+                    } else {
+                        window.location.reload();
+                    }
+                }
             });
         }
     </script>
@@ -130,14 +145,14 @@
 
     <script src="js/firebaseConfig.js?v=4"></script>
     <script src="js/firebaseManager.js?v=4"></script>
-    <script src="js/imageProcessing.js?v=6"></script>
+    <script src="js/imageProcessing.js?v=7"></script>
     <script src="js/digitClassifier.js?v=7"></script>
     <script src="js/ocrParser.js?v=5"></script>
     <script src="js/ocrEngine.js?v=12"></script>
     <script src="js/csvManager.js?v=4"></script>
-    <script src="js/cameraController.js?v=11"></script>
+    <script src="js/cameraController.js?v=12"></script>
     <script src="js/dataView.js?v=4"></script>
     <script src="js/util.js?v=4"></script>
-    <script src="js/main.js?v=11"></script>
+    <script src="js/main.js?v=12"></script>
 </body>
 </html>

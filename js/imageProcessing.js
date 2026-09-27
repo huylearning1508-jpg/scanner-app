@@ -268,6 +268,34 @@ const ImageProcessing = (() => {
      * - Đặt ở giữa khung canvas 32x128 có viền trắng 255.
      * - Chuẩn hoá (v / 127.5) - 1.0 (dải [-1.0, 1.0]).
      */
+    function getBorderMedian(mat) {
+        const w = mat.cols;
+        const h = mat.rows;
+        const data = mat.data;
+        const borderPixels = [];
+
+        // Hàng trên cùng & hàng dưới cùng
+        for (let x = 0; x < w; x++) {
+            borderPixels.push(data[x]);
+            borderPixels.push(data[(h - 1) * w + x]);
+        }
+        // Cột trái & cột phải
+        for (let y = 1; y < h - 1; y++) {
+            borderPixels.push(data[y * w]);
+            borderPixels.push(data[y * w + (w - 1)]);
+        }
+        if (borderPixels.length === 0) return 255;
+        borderPixels.sort((a, b) => a - b);
+        return borderPixels[Math.floor(borderPixels.length / 2)];
+    }
+
+    /**
+     * Tiền xử lý chuẩn cho Model 4.0 (32x128) đồng nhất 100% với Python predict_model4.py:
+     * - Giữ nguyên aspect ratio, co/giãn về kích thước (newW, newH) vừa vặn trong 32x128
+     * - Lấy median các pixel viền ngoài (border median) làm màu nền đệm
+     * - Đặt ký tự vào chính giữa canvas 32x128
+     * - Chuẩn hoá điểm ảnh: (pixel / 127.5) - 1.0 (dải [-1.0, 1.0])
+     */
     function padAndNormalizeForModel4(cropMat) {
         const targetH = 32;
         const targetW = 128;
@@ -281,7 +309,8 @@ const ImageProcessing = (() => {
         const resized = new cv.Mat();
         cv.resize(cropMat, resized, new cv.Size(newW, newH), 0, 0, scale < 1 ? cv.INTER_AREA : cv.INTER_CUBIC);
 
-        const canvasMat = new cv.Mat(targetH, targetW, cv.CV_8UC1, new cv.Scalar(255));
+        const padColor = getBorderMedian(resized);
+        const canvasMat = new cv.Mat(targetH, targetW, cv.CV_8UC1, new cv.Scalar(padColor));
         const xOff = Math.floor((targetW - newW) / 2);
         const yOff = Math.floor((targetH - newH) / 2);
         const roiTarget = canvasMat.roi(new cv.Rect(xOff, yOff, newW, newH));
