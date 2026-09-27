@@ -48,6 +48,7 @@ const ScanStep = Object.freeze({
     const btnFlash = $('btnFlash');
     const btnManualCapture = $('btnManualCapture');
     const btnCameraDiag = $('btnCameraDiag');
+    const btnSwitchCamera = $('btnSwitchCamera');
     const btnEndSession = $('btnEndSession');
     const btnRescan = $('btnRescan');
     const btnConfirm = $('btnConfirm');
@@ -297,9 +298,17 @@ const ScanStep = Object.freeze({
             if (result && result.allValid) {
                 onStep1Captured(result);
             } else {
+                if (result) {
+                    if (result.machineNo !== null && !isNaN(result.machineNo)) etMachineId.value = result.machineNo;
+                    if (result.rtp1 !== null && !isNaN(result.rtp1)) etParamX.value = result.rtp1;
+                    if (result.rtp2 !== null && !isNaN(result.rtp2)) etParamY.value = result.rtp2;
+                }
                 freezePreview();
                 currentStep = ScanStep.STEP1_FROZEN;
-                updateStatusUi();
+                tvScanStatus.textContent = result && (result.machineNo || result.rtp1 || result.rtp2)
+                    ? 'Chưa đủ tất cả thông số. Vui lòng kiểm tra, điền nốt hoặc Quét lại.'
+                    : 'Chưa nhận diện được thông số. Vui lòng căn chỉnh khung ngắm và bấm [Quét lại].';
+                setActionButtonsEnabled(true);
             }
         } else if (currentStep === ScanStep.STEP2_SCANNING) {
             let result = null;
@@ -316,7 +325,8 @@ const ScanStep = Object.freeze({
             } else {
                 freezePreview();
                 currentStep = ScanStep.STEP2_FROZEN;
-                updateStatusUi();
+                tvScanStatus.textContent = 'Chưa nhận diện được ngày. Vui lòng chọn tay hoặc bấm [Quét lại].';
+                setActionButtonsEnabled(true);
             }
         }
     }
@@ -354,6 +364,17 @@ const ScanStep = Object.freeze({
         btnNewSession.addEventListener('click', beginNewSession);
         btnFlash.addEventListener('click', () => CameraController.toggleTorch());
         btnCameraDiag.addEventListener('click', () => CameraController.showDiagModal());
+        if (btnSwitchCamera) {
+            btnSwitchCamera.addEventListener('click', async () => {
+                tvScanStatus.textContent = 'Đang chuyển đổi camera…';
+                try {
+                    await CameraController.switchCamera();
+                    tvScanStatus.textContent = 'Đã đổi camera. Đang quét…';
+                } catch (e) {
+                    tvScanStatus.textContent = 'Lỗi đổi camera: ' + e.message;
+                }
+            });
+        }
         btnGrantPermission.addEventListener('click', bootstrap);
         btnRetryLoad.addEventListener('click', async () => {
             const ok = await initOcrEngineWithRetry();

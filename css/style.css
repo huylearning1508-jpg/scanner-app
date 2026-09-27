@@ -278,6 +278,20 @@ body {
     z-index: 5;
 }
 
+#btnSwitchCamera {
+    position: absolute;
+    top: 64px;
+    left: 140px;
+    background: #333;
+    color: var(--white);
+    border: 1px solid var(--input-stroke);
+    border-radius: 16px;
+    padding: 6px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    z-index: 5;
+}
+
 #btnManualCapture {
     position: absolute;
     bottom: 46px;
