@@ -4,27 +4,35 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>V Club Audit Scanner</title>
-    <link rel="stylesheet" href="css/style.css?v=8" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <link rel="stylesheet" href="css/style.css?v=9" />
     <script>
-        // Hủy triệt để Service Worker và cache cũ của trang thường để đồng nhất 100% với trang ẩn danh
+        // Tự động ép xóa CacheStorage và reload nếu chưa nâng lên bản build mới nhất
+        var CURRENT_APP_VERSION = 'v15_20260927';
+        if (localStorage.getItem('app_build_version') !== CURRENT_APP_VERSION) {
+            localStorage.setItem('app_build_version', CURRENT_APP_VERSION);
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.getRegistrations().then(function(regs) {
+                    for (var r of regs) r.unregister();
+                });
+            }
+            if ('caches' in window) {
+                caches.keys().then(function(names) {
+                    for (var name of names) {
+                        if (name !== 'onnx-model-cache-v4') caches.delete(name);
+                    }
+                }).finally(function() {
+                    window.location.reload(true);
+                });
+            } else {
+                window.location.reload(true);
+            }
+        }
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.getRegistrations().then(function(regs) {
-                var hadSw = regs.length > 0;
                 for (var r of regs) r.unregister();
-                if (hadSw && !sessionStorage.getItem('sw_unregistered_v2')) {
-                    sessionStorage.setItem('sw_unregistered_v2', '1');
-                    if ('caches' in window) {
-                        caches.keys().then(function(names) {
-                            for (var name of names) {
-                                if (name !== 'onnx-model-cache-v4') caches.delete(name);
-                            }
-                        }).finally(function() {
-                            window.location.reload();
-                        });
-                    } else {
-                        window.location.reload();
-                    }
-                }
             });
         }
     </script>
@@ -139,16 +147,16 @@
     <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-database-compat.js"></script>
 
-    <script src="js/firebaseConfig.js?v=4"></script>
-    <script src="js/firebaseManager.js?v=4"></script>
-    <script src="js/imageProcessing.js?v=9"></script>
-    <script src="js/digitClassifier.js?v=8"></script>
-    <script src="js/ocrParser.js?v=7"></script>
-    <script src="js/ocrEngine.js?v=14"></script>
-    <script src="js/csvManager.js?v=4"></script>
-    <script src="js/cameraController.js?v=12"></script>
-    <script src="js/dataView.js?v=4"></script>
-    <script src="js/util.js?v=4"></script>
-    <script src="js/main.js?v=14"></script>
+    <script src="js/firebaseConfig.js?v=5"></script>
+    <script src="js/firebaseManager.js?v=5"></script>
+    <script src="js/imageProcessing.js?v=15"></script>
+    <script src="js/digitClassifier.js?v=15"></script>
+    <script src="js/ocrParser.js?v=15"></script>
+    <script src="js/ocrEngine.js?v=15"></script>
+    <script src="js/csvManager.js?v=5"></script>
+    <script src="js/cameraController.js?v=15"></script>
+    <script src="js/dataView.js?v=5"></script>
+    <script src="js/util.js?v=5"></script>
+    <script src="js/main.js?v=15"></script>
 </body>
 </html>
