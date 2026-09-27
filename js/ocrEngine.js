@@ -38,7 +38,6 @@ const OcrEngine = (() => {
     let running = false;
     let paused = false;
     let loopHandle = null;
-    let liveFilterEnabled = false;
 
     const workCanvas = document.createElement('canvas');
 
@@ -57,9 +56,6 @@ const OcrEngine = (() => {
             DigitClassifier.init('models/digit_model.onnx', 'models/classes.json', onProgress)
         ]);
     }
-
-    function setLiveFilterEnabled(value) { liveFilterEnabled = value; }
-    function isLiveFilterEnabled() { return liveFilterEnabled; }
 
     function getGuideCropCoords(vw, vh) {
         if (cachedCoords && cachedCoords.vw === vw && cachedCoords.vh === vh) {
@@ -130,7 +126,7 @@ const OcrEngine = (() => {
             // nhiễu nặng (loá/moiré) có thể sinh ra hàng trăm box rác — đây là
             // nguyên nhân chính gây chậm bất thường ở một số frame.
             const rowTokens = rowBands.map((rowBand) => {
-                const gapForBreak = tokenizeRows ? 10 : 100000; // step1: không tách token trong dòng
+                const gapForBreak = tokenizeRows ? 10 : 8; // step1: tách từ trong dòng (như MGMD và x1¢)
                 return { rowBand, tokens: ImageProcessing.segmentCharsIntoTokens(binMat, rowBand, gapForBreak) };
             });
             const totalBoxes = rowTokens.reduce((s, r) => s + r.tokens.reduce((s2, t) => s2 + t.length, 0), 0);
@@ -144,13 +140,14 @@ const OcrEngine = (() => {
                 const tokenSlots = [];
                 let mgmdClusterBatchIndex = null;
 
-                // Nếu dòng có token đầu tiên với >= 3 ký tự hoặc chiều rộng >= 30:
+                // Nếu dòng có token đầu tiên với chiều rộng 35-140px và chứa <= 6 box:
                 // Thêm 1 slot crop cluster để Model 4.0 kiểm tra xem có phải chữ MGMD không
-                if (tokens.length > 0 && tokens[0].length >= 3) {
+                if (tokens.length > 0) {
                     const t0 = tokens[0];
                     const x0 = t0[0].x0;
                     const x1 = t0[t0.length - 1].x1;
-                    if (x1 - x0 >= 30) {
+                    const tw = x1 - x0;
+                    if (tw >= 35 && tw <= 140 && t0.length <= 6) {
                         mgmdClusterBatchIndex = allCharImages.length;
                         allCharImages.push(ImageProcessing.cropClusterForClassifier(grayMat, binMat, rowBand, x0, x1));
                     }
@@ -184,31 +181,36 @@ const OcrEngine = (() => {
                 let mgmdConfidence = 0;
                 if (mgmdClusterBatchIndex !== null && classified[mgmdClusterBatchIndex]) {
                     const res = classified[mgmdClusterBatchIndex];
-                    if (res.rawClass === 'mgmd' && res.confidence >= 0.70) {
+                    if (res.rawClass === 'mgmd' && res.confidence >= 0.80) {
                         isMgmd = true;
                         mgmdConfidence = res.confidence;
                     }
                 }
 
                 const tokens = tokenSlots.map((slots) => {
-                    const chars = slots.map((slot) => (slot.kind === 'dot' ? { char: '.', confidence: 1 } : classified[slot.batchIndex]));
+                    const chars = slots.map((slot) => (slot.kind === 'dot' ? { char: '.', rawClass: 'dot', confidence: 1 } : classified[slot.batchIndex]));
                     const text = chars.map((c) => c.char).join('');
                     const meanConfidence = chars.length
                         ? chars.reduce((s, c) => s + c.confidence, 0) / chars.length
                         : 0;
-                    return { text, meanConfidence };
+                    return { text, meanConfidence, chars };
                 });
                 let text = tokens.map((t) => t.text).join(' ');
                 const meanConfidence = tokens.length
                     ? tokens.reduce((s, t) => s + t.meanConfidence, 0) / tokens.length
                     : 0;
 
+                const hasDollar = text.includes('$');
+                const hasPercent = text.includes('%');
+
+                // Dòng chứa $ hoặc % với độ tin cậy cao thì không phải là MGMD
+                if (hasDollar || (hasPercent && meanConfidence >= 0.70)) {
+                    isMgmd = false;
+                }
+
                 if (isMgmd && !text.includes('MGMD')) {
                     text = 'MGMD ' + text;
                 }
-
-                const hasDollar = text.includes('$');
-                const hasPercent = text.includes('%');
 
                 return { text, meanConfidence, tokens, isMgmd, hasDollar, hasPercent, rowBand };
             });
@@ -224,13 +226,10 @@ const OcrEngine = (() => {
      * @param {() => HTMLCanvasElement|null} getFrame
      * @param {() => 'step1'|'step2'} getStep
      * @param {(rows: any[], step: string) => void} onResult
-     * @param {(filteredCanvas: HTMLCanvasElement) => void} [onLiveFilterFrame] gọi mỗi lần có bản lọc live (nếu bật)
      */
-    function startLoop(getFrame, getStep, onResult, onLiveFilterFrame) {
+    function startLoop(getFrame, getStep, onResult) {
         running = true;
         paused = false;
-
-        const previewCanvas = document.createElement('canvas');
 
         const scheduleNext = () => {
             if (!running) return;
@@ -249,16 +248,6 @@ const OcrEngine = (() => {
             try {
                 const source = getFrame();
                 if (source) {
-                    if (liveFilterEnabled && onLiveFilterFrame) {
-                        const band = cropToGuideBand(source);
-                        if (band) {
-                            previewCanvas.width = band.width;
-                            previewCanvas.height = band.height;
-                            ImageProcessing.liveThresholdPreview(band, previewCanvas);
-                            onLiveFilterFrame(previewCanvas);
-                        }
-                    }
-
                     const step = getStep();
                     const rows = await processFrame(source, { tokenizeRows: step === 'step2' });
                     if (!paused && rows && rows.length > 0) onResult(rows, step);
@@ -287,131 +276,8 @@ const OcrEngine = (() => {
         }
     }
 
-    /**
-     * Đọc chuỗi ký tự từ 1 ô/vùng ảnh cắt riêng lẻ (do YOLO phát hiện)
-     * @param {HTMLCanvasElement} cropCanvas ảnh cắt riêng của ô
-     * @param {{isNumericOnly?: boolean}} options
-     * @returns {Promise<{text: string, confidence: number}>}
-     */
-    async function readCropText(cropCanvas, { isNumericOnly = false } = {}) {
-        if (!cropCanvas || cropCanvas.width < 5 || cropCanvas.height < 5) {
-            return { text: '', confidence: 0 };
-        }
-        const { binMat, grayMat } = ImageProcessing.thresholdAndDedither(cropCanvas);
-        try {
-            const rowBand = { y0: 0, y1: binMat.rows };
-            const tokens = ImageProcessing.segmentCharsIntoTokens(binMat, rowBand, 10000);
-            if (tokens.length === 0 || tokens[0].length === 0) {
-                return { text: '', confidence: 0 };
-            }
-
-            const token = tokens[0];
-            const heights = token.map((box) => {
-                const b = ImageProcessing.tightVerticalBounds(binMat, rowBand, box);
-                return b.y1 - b.y0;
-            });
-            const sortedHeights = [...heights].sort((a, b) => a - b);
-            const medianHeight = sortedHeights[Math.floor(sortedHeights.length / 2)] || 1;
-
-            const allCharImages = [];
-            const slots = [];
-
-            for (let i = 0; i < token.length; i++) {
-                const box = token[i];
-                if (!isNumericOnly && token.length > 1 && heights[i] < medianHeight * 0.45) {
-                    slots.push({ kind: 'dot' });
-                } else {
-                    const batchIndex = allCharImages.length;
-                    allCharImages.push(ImageProcessing.cropCharForClassifier(grayMat, binMat, rowBand, box));
-                    slots.push({ kind: 'char', batchIndex });
-                }
-            }
-
-            if (allCharImages.length === 0) return { text: '', confidence: 0 };
-            const classified = await DigitClassifier.classifyBatch(allCharImages);
-
-            const chars = slots.map((s) => s.kind === 'dot' ? { char: '.', confidence: 1.0 } : classified[s.batchIndex]);
-            let text = chars.map((c) => c.char).join('');
-            const meanConfidence = chars.length ? chars.reduce((sum, c) => sum + c.confidence, 0) / chars.length : 0;
-
-            return { text, confidence: meanConfidence };
-        } finally {
-            binMat.delete();
-            grayMat.delete();
-        }
-    }
-
-    /**
-     * Đọc đồng thời nhiều ô ảnh (Machine No, RTP1, RTP2) trong 1 lần batch inference GPU duy nhất
-     * Tối ưu tối đa tốc độ: giảm 3 lần gọi WebGL xuống còn 1 lần duy nhất (~3-5ms)
-     * @param {{canvas: HTMLCanvasElement, isNumericOnly?: boolean}[]} cropItems
-     * @returns {Promise<{text: string, confidence: number}[]>}
-     */
-    async function readMultipleCrops(cropItems) {
-        const allCharImages = [];
-        const cropsMeta = [];
-
-        for (const item of cropItems) {
-            const { canvas, isNumericOnly } = item;
-            if (!canvas || canvas.width < 5 || canvas.height < 5) {
-                cropsMeta.push(null);
-                continue;
-            }
-            const { binMat, grayMat } = ImageProcessing.thresholdAndDedither(canvas);
-            const rowBand = { y0: 0, y1: binMat.rows };
-            const tokens = ImageProcessing.segmentCharsIntoTokens(binMat, rowBand, 10000);
-
-            if (tokens.length === 0 || tokens[0].length === 0) {
-                binMat.delete();
-                grayMat.delete();
-                cropsMeta.push(null);
-                continue;
-            }
-
-            const token = tokens[0];
-            const heights = token.map((box) => {
-                const b = ImageProcessing.tightVerticalBounds(binMat, rowBand, box);
-                return b.y1 - b.y0;
-            });
-            const sortedHeights = [...heights].sort((a, b) => a - b);
-            const medianHeight = sortedHeights[Math.floor(sortedHeights.length / 2)] || 1;
-
-            const slots = [];
-            for (let i = 0; i < token.length; i++) {
-                const box = token[i];
-                if (!isNumericOnly && token.length > 1 && heights[i] < medianHeight * 0.45) {
-                    slots.push({ kind: 'dot' });
-                } else {
-                    const batchIndex = allCharImages.length;
-                    allCharImages.push(ImageProcessing.cropCharForClassifier(grayMat, binMat, rowBand, box));
-                    slots.push({ kind: 'char', batchIndex });
-                }
-            }
-
-            binMat.delete();
-            grayMat.delete();
-            cropsMeta.push({ slots });
-        }
-
-        if (allCharImages.length === 0) {
-            return cropsMeta.map(() => ({ text: '', confidence: 0 }));
-        }
-
-        // 1 LẦN GỌI GPU DUY NHẤT CHO TOÀN BỘ CÁC SỐ CỦA CẢ 3 VÙNG!
-        const classified = await DigitClassifier.classifyBatch(allCharImages);
-
-        return cropsMeta.map((meta) => {
-            if (!meta) return { text: '', confidence: 0 };
-            const chars = meta.slots.map((s) => s.kind === 'dot' ? { char: '.', confidence: 1.0 } : classified[s.batchIndex]);
-            const text = chars.map((c) => c.char).join('');
-            const meanConfidence = chars.length ? chars.reduce((sum, c) => sum + c.confidence, 0) / chars.length : 0;
-            return { text, confidence: meanConfidence };
-        });
-    }
-
     return {
         init, startLoop, stopLoop, setPaused, isPaused,
-        setLiveFilterEnabled, isLiveFilterEnabled,
-        processFrame, readCropText, readMultipleCrops
+        processFrame
     };
 })();

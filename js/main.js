@@ -31,9 +31,6 @@ const ScanStep = Object.freeze({
 
     // ---- Camera / scan ----
     const videoEl = $('video');
-    const liveFilterCanvas = $('liveFilterCanvas');
-    const chkLiveFilter = $('chkLiveFilter');
-    const liveFilterToggle = $('liveFilterToggle');
     const guideOverlay = $('guideOverlay');
 
     const captureCanvas = $('captureCanvas');
@@ -88,8 +85,6 @@ const ScanStep = Object.freeze({
         DataView.stop();
 
         if (guideOverlay) guideOverlay.hidden = false;
-        if (liveFilterToggle) liveFilterToggle.hidden = false;
-        if (liveFilterCanvas) liveFilterCanvas.hidden = !chkLiveFilter.checked;
 
         OcrEngine.setPaused(currentStep === ScanStep.STEP1_FROZEN || currentStep === ScanStep.STEP2_FROZEN || currentStep === ScanStep.SESSION_ENDED);
         updateStatusUi();
@@ -153,8 +148,7 @@ const ScanStep = Object.freeze({
         OcrEngine.startLoop(
             () => CameraController.getVideoElement() || CameraController.captureFrame(),
             () => (currentStep === ScanStep.STEP1_SCANNING ? 'step1' : 'step2'),
-            (rows, step) => handleOcrResult(rows, step),
-            (previewCanvas) => drawLiveFilter(previewCanvas)
+            (rows, step) => handleOcrResult(rows, step)
         );
     }
 
@@ -177,18 +171,6 @@ const ScanStep = Object.freeze({
             return false;
         }
     }
-
-    function drawLiveFilter(previewCanvas) {
-        liveFilterCanvas.width = previewCanvas.width;
-        liveFilterCanvas.height = previewCanvas.height;
-        liveFilterCanvas.getContext('2d').drawImage(previewCanvas, 0, 0);
-    }
-
-    chkLiveFilter.addEventListener('change', () => {
-        const on = chkLiveFilter.checked;
-        OcrEngine.setLiveFilterEnabled(on);
-        liveFilterCanvas.hidden = !on;
-    });
 
     // ============================== ĐỒNG BỘ FIREBASE ==============================
 

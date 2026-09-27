@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>V Club Audit Scanner</title>
-    <link rel="stylesheet" href="css/style.css?v=7" />
+    <link rel="stylesheet" href="css/style.css?v=8" />
     <script>
         // Hủy triệt để Service Worker và cache cũ của trang thường để đồng nhất 100% với trang ẩn danh
         if ('serviceWorker' in navigator) {
@@ -45,7 +45,6 @@
         <!-- NỬA TRÊN: CAMERA -->
         <div id="cameraContainer">
             <video id="video" playsinline autoplay muted></video>
-            <canvas id="liveFilterCanvas" hidden></canvas>
 
             <canvas id="captureCanvas" hidden></canvas>
 
@@ -64,9 +63,6 @@
                     <div id="tvScannedCount">Đã quét: 0 máy</div>
                     <div id="tvCloudStatus">☁ Firebase: chưa cấu hình</div>
                 </div>
-                <label id="liveFilterToggle" title="Xem trước ảnh đã lọc nền (tuỳ chọn)">
-                    <input type="checkbox" id="chkLiveFilter" /> Bộ lọc
-                </label>
                 <button id="btnEndSession">🛑 Kết thúc phiên</button>
             </div>
 
@@ -145,14 +141,14 @@
 
     <script src="js/firebaseConfig.js?v=4"></script>
     <script src="js/firebaseManager.js?v=4"></script>
-    <script src="js/imageProcessing.js?v=7"></script>
-    <script src="js/digitClassifier.js?v=7"></script>
-    <script src="js/ocrParser.js?v=5"></script>
-    <script src="js/ocrEngine.js?v=12"></script>
+    <script src="js/imageProcessing.js?v=8"></script>
+    <script src="js/digitClassifier.js?v=8"></script>
+    <script src="js/ocrParser.js?v=6"></script>
+    <script src="js/ocrEngine.js?v=13"></script>
     <script src="js/csvManager.js?v=4"></script>
     <script src="js/cameraController.js?v=12"></script>
     <script src="js/dataView.js?v=4"></script>
     <script src="js/util.js?v=4"></script>
-    <script src="js/main.js?v=12"></script>
+    <script src="js/main.js?v=13"></script>
 </body>
 </html>

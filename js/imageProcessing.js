@@ -115,12 +115,27 @@ const ImageProcessing = (() => {
         // bằng toán tử hình thái học MORPH_OPEN thuần C++ WASM.
         // Opening (erode + dilate) với kernel 2x2 loại bỏ triệt để các hạt dither 1-2px,
         // trong khi bảo toàn 100% nét chữ số (dày 3-5px).
-        // Tốc độ: ~1.5ms thay vì 180ms của giải thuật cũ.
         const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2));
         const cleaned = new cv.Mat();
         cv.morphologyEx(inv, cleaned, cv.MORPH_OPEN, kernel);
 
         src.delete(); bin.delete(); inv.delete(); kernel.delete();
+
+        // Bước 3: Khử đường kẻ dọc bảng biểu của màn hình máy đánh bạc
+        // Các cột có tỉ lệ điểm trắng > 55% chiều cao là đường kẻ dọc cột, gây nhiễu dính liền tất cả các dòng
+        const rCount = cleaned.rows, cCount = cleaned.cols;
+        const cData = cleaned.data;
+        for (let x = 0; x < cCount; x++) {
+            let colWhite = 0;
+            for (let y = 0; y < rCount; y++) {
+                if (cData[y * cCount + x] > 0) colWhite++;
+            }
+            if (colWhite > rCount * 0.55) {
+                for (let y = 0; y < rCount; y++) {
+                    cData[y * cCount + x] = 0;
+                }
+            }
+        }
 
         // Trả về { binMat: cleaned, grayMat: gray } — Caller tự .delete() cả 2.
         return { binMat: cleaned, grayMat: gray };
@@ -142,22 +157,45 @@ const ImageProcessing = (() => {
             for (let x = 0; x < cols; x++) sum += data[base + x] > 0 ? 1 : 0;
             rowSum[y] = sum;
         }
-        // Ngưỡng 0.5% chiều rộng để nhận diện cả dòng chứa 1 chữ số duy nhất (Machine No: "3")
-        const threshold = Math.max(2, Math.round(cols * 0.005));
+        // Dùng trễ ngưỡng (hysteresis) để không bỏ sót các dòng chỉ có 1 chữ số mỏng (như Machine No '3' hay '1')
+        // Ngưỡng kích hoạt dải: rowSum >= 3 (bắt đầu theo dõi nét chữ)
+        // Điều kiện chấp nhận dải: chiều cao >= minRowHeight (6px) VÀ đỉnh nét chữ rowSum >= 8 (loại bỏ nhiễu mờ)
+        const thActive = 3;
         const bands = [];
         let inBand = false, y0 = 0;
         for (let y = 0; y < rows; y++) {
-            const active = rowSum[y] >= threshold;
+            const active = rowSum[y] >= thActive;
             if (active && !inBand) { inBand = true; y0 = y; }
             if (!active && inBand) {
                 inBand = false;
-                if (y - y0 >= minRowHeight) bands.push({ y0, y1: y });
+                let maxVal = 0;
+                for (let k = y0; k < y; k++) if (rowSum[k] > maxVal) maxVal = rowSum[k];
+                if (y - y0 >= minRowHeight && maxVal >= 8) bands.push({ y0, y1: y });
             }
         }
-        if (inBand && rows - y0 >= minRowHeight) bands.push({ y0, y1: rows });
+        if (inBand && rows - y0 >= minRowHeight) {
+            let maxVal = 0;
+            for (let k = y0; k < rows; k++) if (rowSum[k] > maxVal) maxVal = rowSum[k];
+            if (maxVal >= 8) bands.push({ y0, y1: rows });
+        }
+
+        // Gom các dải quá gần nhau (< 5px) lại thành 1 dòng thống nhất
+        const mergedBands = [];
+        for (const band of bands) {
+            if (mergedBands.length === 0) {
+                mergedBands.push(band);
+            } else {
+                const prev = mergedBands[mergedBands.length - 1];
+                if (band.y0 - prev.y1 < 5) {
+                    mergedBands[mergedBands.length - 1] = { y0: prev.y0, y1: band.y1 };
+                } else {
+                    mergedBands.push(band);
+                }
+            }
+        }
 
         const final = [];
-        for (const band of bands) final.push(...splitByLocalMinima(rowSum, band, minRowHeight));
+        for (const band of mergedBands) final.push(...splitByLocalMinima(rowSum, band, minRowHeight));
         return final;
     }
 
