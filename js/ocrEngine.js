@@ -140,14 +140,14 @@ const OcrEngine = (() => {
                 const tokenSlots = [];
                 let mgmdClusterBatchIndex = null;
 
-                // Nếu dòng có token đầu tiên với chiều rộng 35-140px và chứa <= 6 box:
+                // Nếu dòng có token đầu tiên với chiều rộng 30-180px và chứa <= 10 box:
                 // Thêm 1 slot crop cluster để Model 4.0 kiểm tra xem có phải chữ MGMD không
                 if (tokens.length > 0) {
                     const t0 = tokens[0];
                     const x0 = t0[0].x0;
                     const x1 = t0[t0.length - 1].x1;
                     const tw = x1 - x0;
-                    if (tw >= 35 && tw <= 140 && t0.length <= 6) {
+                    if (tw >= 30 && tw <= 180 && t0.length <= 10) {
                         mgmdClusterBatchIndex = allCharImages.length;
                         allCharImages.push(ImageProcessing.cropClusterForClassifier(grayMat, binMat, rowBand, x0, x1));
                     }
@@ -203,8 +203,10 @@ const OcrEngine = (() => {
                 const hasDollar = text.includes('$');
                 const hasPercent = text.includes('%');
 
-                // Dòng chứa $ hoặc % với độ tin cậy cao thì không phải là MGMD
-                if (hasDollar || (hasPercent && meanConfidence >= 0.70)) {
+                // Dòng Denom ($0.01) hoặc dòng RTP hợp lệ (> 80%) thì không phải là MGMD
+                const isDenom = typeof OcrParser !== 'undefined' ? OcrParser.isDenomRow(text) : false;
+                const isRtp = typeof OcrParser !== 'undefined' ? (OcrParser.parseRtpValue(text) !== null) : false;
+                if (isDenom || isRtp) {
                     isMgmd = false;
                 }
 
@@ -212,7 +214,7 @@ const OcrEngine = (() => {
                     text = 'MGMD ' + text;
                 }
 
-                return { text, meanConfidence, tokens, isMgmd, hasDollar, hasPercent, rowBand };
+                return { text, meanConfidence, tokens, isMgmd, mgmdConfidence, hasDollar, hasPercent, rowBand };
             });
 
             return rows;

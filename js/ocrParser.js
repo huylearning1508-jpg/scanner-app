@@ -27,26 +27,24 @@ const OcrParser = (() => {
     function parseRtpValue(text) {
         if (!text) return null;
 
-        // 1. Ưu tiên số có dấu % đứng sau (ví dụ: 93.966%, 93.56%)
-        const pctMatch = text.match(/(8\d|9\d)(?:\.(\d+))?\s*%/);
+        // Chuẩn hóa: nếu có ký tự $ trước dấu chấm hoặc trước % (nhận nhầm số 5 thành $), sửa thành 5
+        let fixed = text;
+        if (fixed.includes('%') || /\.\d{2,}/.test(fixed)) {
+            fixed = fixed.replace(/\$/g, '5');
+        }
+
+        // 1. Ưu tiên số có dấu % đứng sau (ví dụ: 95.427%, 93.63%, 94.05%)
+        const pctMatch = fixed.match(/(8\d|9\d)(?:\.(\d+))?\s*%/);
         if (pctMatch) {
             const val = pctMatch[2] ? Number(pctMatch[1] + '.' + pctMatch[2]) : Number(pctMatch[1]);
             if (val >= RTP_MIN && val <= RTP_MAX) return { val, autoCorrected: !pctMatch[2] };
         }
 
-        // 2. Tìm số 8x hoặc 9x có dấu chấm thập phân
-        const decMatch = text.match(/(8\d|9\d)\.(\d{2,4})/);
+        // 2. Tìm số 8x hoặc 9x có dấu chấm thập phân (ví dụ: 95.427, 94.05)
+        const decMatch = fixed.match(/(8\d|9\d)\.(\d{2,4})/);
         if (decMatch) {
             const val = Number(decMatch[1] + '.' + decMatch[2]);
             if (val >= RTP_MIN && val <= RTP_MAX) return { val, autoCorrected: false };
-        }
-
-        // 3. Dự phòng không có dấu chấm: chuỗi 8x hoặc 9x liền sau 2-3 chữ số
-        const digitsOnly = text.replace(/[^0-9]/g, '');
-        const numMatch = digitsOnly.match(/(8\d|9\d)(\d{2,3})/);
-        if (numMatch) {
-            const val = Number(numMatch[1] + '.' + numMatch[2]);
-            if (val >= RTP_MIN && val <= RTP_MAX) return { val, autoCorrected: true };
         }
 
         return null;
@@ -59,6 +57,7 @@ const OcrParser = (() => {
      */
     function parseMachineNumber(text) {
         if (!text) return null;
+        if (text.includes('%') || isDenomRow(text) || text.includes('MGMD')) return null;
         const digits = text.replace(/[^0-9]/g, '');
         if (!digits) return null;
         const val = Number(digits);
@@ -67,20 +66,26 @@ const OcrParser = (() => {
     }
 
     /**
-     * Nhận diện dòng Denom (chứa $ hoặc mệnh giá như $0.01)
+     * Nhận diện dòng Denom (chứa $0.01, $0.02, $0.05, 50.01, S0.01, 0.01,...)
      * @param {string} text
      * @returns {boolean}
      */
     function isDenomRow(text) {
         if (!text) return false;
-        return text.includes('$') || /0\.\d{2}/.test(text) || text.includes('001') || text.includes('002') || text.includes('005');
+        const clean = text.replace(/\s+/g, '');
+        if (/(?:\$|5|s)\s*0?\s*[.,]\s*0\s*[125]/i.test(clean)) return true;
+        if (/(?:0|00)\s*[.,]\s*0\s*[125]/.test(clean)) return true;
+        if (/\b0\.0[125]\b/.test(clean)) return true;
+        if (/\$0\.\d{2}/.test(clean) || /\$1\.00/.test(clean)) return true;
+        if (/001|002|005/.test(clean)) return true;
+        return false;
     }
 
     /**
-     * @param {{text: string, meanConfidence: number, isMgmd?: boolean, hasDollar?: boolean}[]} rows
+     * @param {{text: string, meanConfidence: number, isMgmd?: boolean, mgmdConfidence?: number}[]} rows
      * danh sách dòng đã nhận diện, thứ tự từ trên xuống dưới
      * @returns {null | {
-     *   machineNo: number, rtp1: number, rtp2: number,
+     *   machineNo: number, rtp1: number, rtp2: number, denom?: string,
      *   confidence: {machineNo:number, rtp1:number, rtp2:number},
      *   autoCorrected: {rtp1:boolean, rtp2:boolean},
      *   allValid: boolean
@@ -92,44 +97,46 @@ const OcrParser = (() => {
         let bestCandidate = null;
         let bestScore = -1;
 
-        for (let i = 0; i < rows.length; i++) {
-            const row = rows[i];
-            const isAnchorMgmd = row.isMgmd || (row.text && row.text.includes('MGMD'));
+        // Quét tìm mốc MGMD (hoặc dòng Denom ngay trên MGMD)
+        for (let mIdx = 0; mIdx < rows.length; mIdx++) {
+            const row = rows[mIdx];
+            const isRowMgmd = row.isMgmd || (row.text && row.text.includes('MGMD'));
 
-            // Thử xét mốc i là MGMD (hoặc i là Denom -> MGMD là i + 1)
             let mgmdIdx = -1;
-            if (isAnchorMgmd) {
-                mgmdIdx = i;
+            if (isRowMgmd) {
+                mgmdIdx = mIdx;
             } else if (isDenomRow(row.text)) {
-                mgmdIdx = i + 1; // Denom nằm ngay trên MGMD 1 dòng
+                mgmdIdx = mIdx + 1; // Denom nằm ngay trên MGMD 1 dòng
             }
 
             if (mgmdIdx === -1 || mgmdIdx < 2) continue;
 
             // Đánh giá cấu trúc dòng phía trên theo đúng yêu cầu:
             // mgmdIdx - 1: Denom ($0.01)
-            // mgmdIdx - 2: Machine No (3)
-            // mgmdIdx - 3: RTP 2 (93.56%)
-            // mgmdIdx - 4: RTP 1 (93.966%)
+            // mgmdIdx - 2: Machine No (13, 4, 3)
+            // mgmdIdx - 3: RTP 2 (93.63%, 94.05%)
+            // mgmdIdx - 4: RTP 1 (95.427%, 94.237%)
 
             let score = 0;
             if (mgmdIdx < rows.length && (rows[mgmdIdx].isMgmd || (rows[mgmdIdx].text && rows[mgmdIdx].text.includes('MGMD')))) {
-                score += 20;
+                score += 25;
             }
 
-            const denomRow = rows[mgmdIdx - 1];
-            if (denomRow && isDenomRow(denomRow.text)) {
-                score += 10;
+            let denomVal = null;
+            if (mgmdIdx >= 1 && isDenomRow(rows[mgmdIdx - 1].text)) {
+                score += 15;
+                denomVal = rows[mgmdIdx - 1].text;
             }
 
-            // Machine No (vị trí chuẩn: mgmdIdx - 2, có dung sai nếu có dải nhiễu mỏng)
-            let machVal = null, machRowUsed = null;
+            // Machine No (vị trí chuẩn: mgmdIdx - 2, có dung sai +-1 dòng nếu có dải nhiễu mỏng)
+            let machVal = null, machIdx = -1, machRowUsed = null;
             for (const offset of [-2, -1, -3]) {
                 const idx = mgmdIdx + offset;
                 if (idx >= 0 && idx < rows.length && idx !== mgmdIdx - 1) {
                     const m = parseMachineNumber(rows[idx].text);
-                    if (m !== null) {
+                    if (m !== null && m < 80) { // Machine No thực tế 1-80
                         machVal = m;
+                        machIdx = idx;
                         machRowUsed = rows[idx];
                         score += (offset === -2 ? 15 : 8);
                         break;
@@ -138,13 +145,14 @@ const OcrParser = (() => {
             }
 
             // RTP 2 (vị trí chuẩn: mgmdIdx - 3)
-            let rtp2Obj = null, rtp2RowUsed = null;
+            let rtp2Obj = null, rtp2Idx = -1, rtp2RowUsed = null;
             for (const offset of [-3, -2, -4]) {
                 const idx = mgmdIdx + offset;
-                if (idx >= 0 && idx < rows.length && idx !== mgmdIdx - 1 && rows[idx] !== machRowUsed) {
+                if (idx >= 0 && idx < rows.length && idx !== mgmdIdx - 1 && idx !== machIdx) {
                     const r = parseRtpValue(rows[idx].text);
                     if (r !== null) {
                         rtp2Obj = r;
+                        rtp2Idx = idx;
                         rtp2RowUsed = rows[idx];
                         score += (offset === -3 ? 15 : 8);
                         break;
@@ -152,14 +160,16 @@ const OcrParser = (() => {
                 }
             }
 
-            // RTP 1 (vị trí chuẩn: mgmdIdx - 4)
-            let rtp1Obj = null, rtp1RowUsed = null;
+            // RTP 1 (vị trí chuẩn: mgmdIdx - 4, luôn nằm trên RTP 2)
+            let rtp1Obj = null, rtp1Idx = -1, rtp1RowUsed = null;
             for (const offset of [-4, -3, -5]) {
                 const idx = mgmdIdx + offset;
-                if (idx >= 0 && idx < rows.length && idx !== mgmdIdx - 1 && rows[idx] !== machRowUsed && rows[idx] !== rtp2RowUsed) {
+                if (idx >= 0 && idx < rows.length && idx !== mgmdIdx - 1 && idx !== machIdx && idx !== rtp2Idx) {
+                    if (rtp2Idx !== -1 && idx > rtp2Idx) continue; // RTP 1 phải nằm trên RTP 2
                     const r = parseRtpValue(rows[idx].text);
                     if (r !== null) {
                         rtp1Obj = r;
+                        rtp1Idx = idx;
                         rtp1RowUsed = rows[idx];
                         score += (offset === -4 ? 15 : 8);
                         break;
@@ -174,6 +184,7 @@ const OcrParser = (() => {
                         machineNo: machVal,
                         rtp1: rtp1Obj.val,
                         rtp2: rtp2Obj.val,
+                        denom: denomVal,
                         confidence: {
                             machineNo: machRowUsed ? machRowUsed.meanConfidence : 1,
                             rtp1: rtp1RowUsed ? rtp1RowUsed.meanConfidence : 1,
@@ -216,5 +227,5 @@ const OcrParser = (() => {
         return { day, year };
     }
 
-    return { parseStep1, parseStep2, parseRtpValue, parseMachineNumber, RTP_MIN, RTP_MAX, MACHINE_NO_MIN, MACHINE_NO_MAX };
+    return { parseStep1, parseStep2, parseRtpValue, parseMachineNumber, isDenomRow, RTP_MIN, RTP_MAX, MACHINE_NO_MIN, MACHINE_NO_MAX };
 })();

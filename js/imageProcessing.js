@@ -121,18 +121,34 @@ const ImageProcessing = (() => {
 
         src.delete(); bin.delete(); inv.delete(); kernel.delete();
 
-        // Bước 3: Khử đường kẻ dọc bảng biểu của màn hình máy đánh bạc
-        // Các cột có tỉ lệ điểm trắng > 55% chiều cao là đường kẻ dọc cột, gây nhiễu dính liền tất cả các dòng
+        // Bước 3: Khử viền biên và đường kẻ dọc bảng biểu của màn hình máy đánh bạc
         const rCount = cleaned.rows, cCount = cleaned.cols;
         const cData = cleaned.data;
-        for (let x = 0; x < cCount; x++) {
+
+        // Xóa viền biên trái / phải (3px) để triệt tiêu viền khung cắt / viền màn hình
+        for (let y = 0; y < rCount; y++) {
+            for (let x = 0; x < 3; x++) cData[y * cCount + x] = 0;
+            for (let x = Math.max(0, cCount - 3); x < cCount; x++) cData[y * cCount + x] = 0;
+        }
+
+        // Các cột có tỉ lệ điểm trắng > 30% chiều cao là đường kẻ dọc cột, gây nhiễu dính liền các dòng
+        const colsToClear = [];
+        for (let x = 3; x < cCount - 3; x++) {
             let colWhite = 0;
             for (let y = 0; y < rCount; y++) {
                 if (cData[y * cCount + x] > 0) colWhite++;
             }
-            if (colWhite > rCount * 0.55) {
-                for (let y = 0; y < rCount; y++) {
-                    cData[y * cCount + x] = 0;
+            if (colWhite > rCount * 0.30) {
+                colsToClear.push(x);
+            }
+        }
+        for (const cx of colsToClear) {
+            for (let dx = -1; dx <= 1; dx++) {
+                const targetX = cx + dx;
+                if (targetX >= 0 && targetX < cCount) {
+                    for (let y = 0; y < rCount; y++) {
+                        cData[y * cCount + targetX] = 0;
+                    }
                 }
             }
         }
@@ -252,10 +268,14 @@ const ImageProcessing = (() => {
             if (active && !inChar) { inChar = true; x0 = x; }
             if (!active && inChar) {
                 inChar = false;
-                charBoxes.push({ x0, x1: x });
+                if (x - x0 >= 3) {
+                    charBoxes.push({ x0, x1: x });
+                }
             }
         }
-        if (inChar) charBoxes.push({ x0, x1: cols });
+        if (inChar && (cols - x0 >= 3)) {
+            charBoxes.push({ x0, x1: cols });
+        }
 
         const tokens = [];
         let current = [];
