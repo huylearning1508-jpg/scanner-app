@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="css/style.css?v=11" />
     <script>
         // Tự động ép xóa CacheStorage và reload nếu chưa nâng lên bản build mới nhất
-        var CURRENT_APP_VERSION = 'v18_20260927';
+        var CURRENT_APP_VERSION = 'v19_20260927';
         if (localStorage.getItem('app_build_version') !== CURRENT_APP_VERSION) {
             localStorage.setItem('app_build_version', CURRENT_APP_VERSION);
             if ('serviceWorker' in navigator) {
@@ -21,7 +21,7 @@
             if ('caches' in window) {
                 caches.keys().then(function(names) {
                     for (var name of names) {
-                        if (name !== 'onnx-model-cache-v4') caches.delete(name);
+                        if (name !== 'onnx-model-cache-v5') caches.delete(name);
                     }
                 }).finally(function() {
                     window.location.reload(true);
@@ -64,7 +64,7 @@
             <svg id="guideOverlay" viewBox="0 0 100 100" preserveAspectRatio="none">
                 <rect id="guideRect" x="30" y="15" width="65" height="70" />
                 <line id="guideBottomLine" x1="28" y1="85" x2="97" y2="85" />
-                <text id="guideBottomLabel" x="62.5" y="83.5" text-anchor="middle">▲ ĐẶT SÁT DÒNG MGMD ▲</text>
+                <text id="guideBottomLabel" x="62.5" y="88.5" text-anchor="middle">▲ ĐẶT SÁT DÒNG MGMD ▲</text>
             </svg>
 
             <div id="headerBar">

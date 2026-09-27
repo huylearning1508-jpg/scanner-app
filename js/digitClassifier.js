@@ -20,7 +20,7 @@ const DigitClassifier = (() => {
     async function fetchBufferWithCache(url, onProgress) {
         if ('caches' in window) {
             try {
-                const cache = await caches.open('onnx-model-cache-v4');
+                const cache = await caches.open('onnx-model-cache-v5');
                 const match = await cache.match(url);
                 if (match) {
                     if (onProgress) onProgress(100, 'Tải tức thì từ bộ nhớ đệm');
@@ -38,7 +38,7 @@ const DigitClassifier = (() => {
             const buf = await resp.arrayBuffer();
             if ('caches' in window) {
                 try {
-                    const cache = await caches.open('onnx-model-cache-v4');
+                    const cache = await caches.open('onnx-model-cache-v5');
                     cache.put(url, new Response(buf.slice(0))).catch(() => {});
                 } catch (e) {}
             }
@@ -69,7 +69,7 @@ const DigitClassifier = (() => {
 
         if ('caches' in window) {
             try {
-                const cache = await caches.open('onnx-model-cache-v4');
+                const cache = await caches.open('onnx-model-cache-v5');
                 cache.put(url, new Response(totalBuffer.buffer)).catch(() => {});
             } catch (e) {}
         }
@@ -89,16 +89,16 @@ const DigitClassifier = (() => {
                 session = await ort.InferenceSession.create(buffer, {
                     executionProviders: ['webgl'],
                 });
-                console.log('[DigitClassifier] Khởi tạo Model 4.0 với WebGL (GPU Accelerated)');
+                console.log('[DigitClassifier] Khởi tạo Model 5.0 với WebGL (GPU Accelerated)');
             } catch (e) {
                 console.warn('[DigitClassifier] WebGL không khả dụng, fallback sang WASM CPU:', e.message);
                 session = await ort.InferenceSession.create(buffer, {
                     executionProviders: ['wasm'],
                 });
-                console.log('[DigitClassifier] Khởi tạo Model 4.0 với WASM SIMD (CPU)');
+                console.log('[DigitClassifier] Khởi tạo Model 5.0 với WASM SIMD (CPU)');
             }
         } catch (loadErr) {
-            console.error('[DigitClassifier] Lỗi tải Model 4.0:', loadErr);
+            console.error('[DigitClassifier] Lỗi tải Model 5.0:', loadErr);
         }
 
         const res = await fetch(classesUrl);

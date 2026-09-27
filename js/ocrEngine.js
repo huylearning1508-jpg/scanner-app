@@ -160,7 +160,7 @@ const OcrEngine = (() => {
             // nhiễu nặng (loá/moiré) có thể sinh ra hàng trăm box rác — đây là
             // nguyên nhân chính gây chậm bất thường ở một số frame.
             const rowTokens = rowBands.map((rowBand) => {
-                const gapForBreak = tokenizeRows ? 10 : 8; // step1: tách từ trong dòng (như MGMD và x1¢)
+                const gapForBreak = tokenizeRows ? 10 : 20; // step1: giữ nguyên số thập phân và denom cách nhau
                 return { rowBand, tokens: ImageProcessing.segmentCharsIntoTokens(binMat, rowBand, gapForBreak) };
             });
             const totalBoxes = rowTokens.reduce((s, r) => s + r.tokens.reduce((s2, t) => s2 + t.length, 0), 0);
@@ -170,18 +170,19 @@ const OcrEngine = (() => {
             const allCharImages = [];
             const rowMeta = [];
 
-            for (const { rowBand, tokens } of rowTokens) {
+            for (let rowIndex = 0; rowIndex < rowTokens.length; rowIndex++) {
+                const { rowBand, tokens } = rowTokens[rowIndex];
                 const tokenSlots = [];
                 let mgmdClusterBatchIndex = null;
 
-                // Nếu dòng có token đầu tiên với chiều rộng 30-180px và chứa <= 10 box:
-                // Thêm 1 slot crop cluster để Model 4.0 kiểm tra xem có phải chữ MGMD không
-                if (tokens.length > 0) {
+                // Chỉ kiểm tra cluster MGMD ở 2 dòng cuối cùng và ở góc trái màn hình
+                const isBottomCandidate = (rowIndex >= rowTokens.length - 2);
+                if (isBottomCandidate && tokens.length > 0) {
                     const t0 = tokens[0];
                     const x0 = t0[0].x0;
                     const x1 = t0[t0.length - 1].x1;
                     const tw = x1 - x0;
-                    if (tw >= 30 && tw <= 180 && t0.length <= 10) {
+                    if (tw >= 60 && tw <= 220 && x0 < (binMat.cols * 0.5)) {
                         mgmdClusterBatchIndex = allCharImages.length;
                         allCharImages.push(ImageProcessing.cropClusterForClassifier(grayMat, binMat, rowBand, x0, x1));
                     }
@@ -196,7 +197,13 @@ const OcrEngine = (() => {
                     const medianHeight = sortedHeights[Math.floor(sortedHeights.length / 2)] || 1;
 
                     const slots = token.map((box, i) => {
-                        if (token.length > 1 && heights[i] < medianHeight * 0.45) {
+                        const b = ImageProcessing.tightVerticalBounds(binMat, rowBand, box);
+                        const boxH = b.y1 - b.y0;
+                        const boxW = box.x1 - box.x0;
+                        const yMid = (b.y0 + b.y1) / 2.0;
+                        const bandH = rowBand.y1 - rowBand.y0;
+                        const isDot = (boxH <= medianHeight * 0.45 || (boxW <= 12 && boxH <= 18 && yMid > rowBand.y0 + bandH * 0.40)) && boxW <= 16;
+                        if (isDot) {
                             return { kind: 'dot' };
                         }
                         const batchIndex = allCharImages.length;

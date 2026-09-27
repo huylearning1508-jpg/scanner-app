@@ -123,7 +123,7 @@ const ScanStep = Object.freeze({
             await CameraController.startCamera();
             permissionOverlay.hidden = true;
             btnFlash.style.display = CameraController.isTorchSupported() ? '' : 'none';
-            tvScanStatus.textContent = 'Camera đã sẵn sàng. Đang nạp Model 4.0…';
+            tvScanStatus.textContent = 'Camera đã sẵn sàng. Đang nạp Model 5.0…';
         } catch (e) {
             console.error('Không thể mở camera', e);
             permissionOverlay.hidden = false;
@@ -156,17 +156,17 @@ const ScanStep = Object.freeze({
         loadingOverlay.hidden = false;
         btnRetryLoad.hidden = true;
         loadingText.className = '';
-        loadingText.textContent = 'Đang nạp Model 4.0…';
+        loadingText.textContent = 'Đang nạp Model 5.0…';
         try {
             await OcrEngine.init((pct, info) => {
-                loadingText.textContent = `Đang nạp Model 4.0: ${info}`;
+                loadingText.textContent = `Đang nạp Model 5.0: ${info}`;
             });
             loadingOverlay.hidden = true;
             return true;
         } catch (e) {
             console.error('Không thể khởi tạo bộ máy nhận diện', e);
             loadingText.className = 'error';
-            loadingText.textContent = 'Lỗi nạp Model 4.0: ' + e.message;
+            loadingText.textContent = 'Lỗi nạp Model 5.0: ' + e.message;
             btnRetryLoad.hidden = false;
             return false;
         }

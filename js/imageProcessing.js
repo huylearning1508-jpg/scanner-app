@@ -98,54 +98,31 @@ const ImageProcessing = (() => {
         const gray = new cv.Mat();
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
-        // Bước 1: adaptive threshold — nền về trắng (255), chữ tối hơn.
+        // Bước 1: GaussianBlur nhẹ 3x3 trước adaptive threshold để triệt tiêu nhiễu lưới moiré / dithering LCD
+        // mà vẫn bảo toàn 100% hình thái nét chữ số thật.
+        const blur = new cv.Mat();
+        cv.GaussianBlur(gray, blur, new cv.Size(3, 3), 0);
+
         const bin = new cv.Mat();
         cv.adaptiveThreshold(
-            gray, bin, 255,
+            blur, bin, 255,
             cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY,
-            21, 12
+            21, 16
         );
 
         // Đảo âm bản: chữ = trắng (255) trên nền đen (0) chuẩn cho tách dòng/ký tự.
-        // Bỏ hoàn toàn morphologyEx: tránh mòn nét chữ số mỏng và tiết kiệm thời gian xử lý WASM.
         const cleaned = new cv.Mat();
         cv.bitwise_not(bin, cleaned);
 
-        src.delete(); bin.delete();
+        src.delete(); blur.delete(); bin.delete();
 
-        // Bước 2: Khử viền biên và đường kẻ dọc bảng biểu của màn hình máy đánh bạc
+        // Bước 2: Xóa viền biên trái / phải (3px) để triệt tiêu viền khung cắt
         const rCount = cleaned.rows, cCount = cleaned.cols;
         const cData = cleaned.data;
-
-        // Xóa viền biên trái / phải (3px) để triệt tiêu viền khung cắt / viền màn hình
         for (let y = 0; y < rCount; y++) {
             const rowBase = y * cCount;
             for (let x = 0; x < 3; x++) cData[rowBase + x] = 0;
             for (let x = Math.max(0, cCount - 3); x < cCount; x++) cData[rowBase + x] = 0;
-        }
-
-        // Đếm điểm trắng theo từng cột với truy cập Row-Major tuần tự (tối ưu cache CPU)
-        const colWhite = new Int32Array(cCount);
-        for (let y = 0; y < rCount; y++) {
-            const rowBase = y * cCount;
-            for (let x = 3; x < cCount - 3; x++) {
-                if (cData[rowBase + x] > 0) colWhite[x]++;
-            }
-        }
-
-        // Ngưỡng 20%: chữ số chỉ cao 3-5% chiều cao, bất kỳ cột nào có >20% pixel trắng đều là đường kẻ bảng/viền rác
-        const thCol = Math.round(rCount * 0.20);
-        for (let x = 3; x < cCount - 3; x++) {
-            if (colWhite[x] > thCol) {
-                for (let dx = -1; dx <= 1; dx++) {
-                    const targetX = x + dx;
-                    if (targetX >= 0 && targetX < cCount) {
-                        for (let y = 0; y < rCount; y++) {
-                            cData[y * cCount + targetX] = 0;
-                        }
-                    }
-                }
-            }
         }
 
         // Trả về { binMat: cleaned, grayMat: gray } — Caller tự .delete() cả 2.
@@ -168,10 +145,10 @@ const ImageProcessing = (() => {
             for (let x = 0; x < cols; x++) sum += data[base + x] > 0 ? 1 : 0;
             rowSum[y] = sum;
         }
-        // Dùng trễ ngưỡng (hysteresis) để không bỏ sót các dòng chỉ có 1 chữ số mỏng (như Machine No '3' hay '1')
-        // Ngưỡng kích hoạt dải: rowSum >= 3 (bắt đầu theo dõi nét chữ)
-        // Điều kiện chấp nhận dải: chiều cao >= minRowHeight (6px) VÀ đỉnh nét chữ rowSum >= 8 (loại bỏ nhiễu mờ)
-        const thActive = 3;
+        // Dùng trễ ngưỡng (hysteresis):
+        // Ngưỡng kích hoạt dải: rowSum >= 8 (loại bỏ hoàn toàn đốm dither li ti giữa các dòng)
+        // Điều kiện chấp nhận dải: chiều cao >= minRowHeight (6px) VÀ đỉnh nét chữ rowSum >= 15
+        const thActive = 8;
         const bands = [];
         let inBand = false, y0 = 0;
         for (let y = 0; y < rows; y++) {
@@ -181,13 +158,13 @@ const ImageProcessing = (() => {
                 inBand = false;
                 let maxVal = 0;
                 for (let k = y0; k < y; k++) if (rowSum[k] > maxVal) maxVal = rowSum[k];
-                if (y - y0 >= minRowHeight && maxVal >= 8) bands.push({ y0, y1: y });
+                if (y - y0 >= minRowHeight && maxVal >= 15) bands.push({ y0, y1: y });
             }
         }
         if (inBand && rows - y0 >= minRowHeight) {
             let maxVal = 0;
             for (let k = y0; k < rows; k++) if (rowSum[k] > maxVal) maxVal = rowSum[k];
-            if (maxVal >= 8) bands.push({ y0, y1: rows });
+            if (maxVal >= 15) bands.push({ y0, y1: rows });
         }
 
         // Gom các dải quá gần nhau (< 5px) lại thành 1 dòng thống nhất
@@ -243,7 +220,7 @@ const ImageProcessing = (() => {
      * Tách ký tự trong 1 dải hàng bằng vertical projection profile, gom
      * thành token (cụm ký tự cách nhau khoảng trắng lớn = ranh giới token).
      */
-    function segmentCharsIntoTokens(binMat, band, gapForTokenBreak = 10) {
+    function segmentCharsIntoTokens(binMat, band, gapForTokenBreak = 20) {
         const cols = binMat.cols;
         const data = binMat.data;
         const colSum = new Int32Array(cols);
@@ -263,12 +240,13 @@ const ImageProcessing = (() => {
             if (active && !inChar) { inChar = true; x0 = x; }
             if (!active && inChar) {
                 inChar = false;
-                if (x - x0 >= 3) {
+                // Chữ số thật có bề ngang tối thiểu >= 6px (loại bỏ vết nhiễu sọc bảng dọc < 6px)
+                if (x - x0 >= 6) {
                     charBoxes.push({ x0, x1: x });
                 }
             }
         }
-        if (inChar && (cols - x0 >= 3)) {
+        if (inChar && (cols - x0 >= 6)) {
             charBoxes.push({ x0, x1: cols });
         }
 
@@ -300,15 +278,30 @@ const ImageProcessing = (() => {
         const cols = binMat.cols;
         const data = binMat.data;
         let top = -1, bottom = -1;
+        // Quét tìm top/bottom yêu cầu tối thiểu 2 pixel ink trong dòng để loại bỏ hạt nhiễu đơn lẻ
         for (let y = band.y0; y < band.y1; y++) {
-            let hasInk = false;
+            let inkCount = 0;
             const base = y * cols;
             for (let x = box.x0; x < box.x1; x++) {
-                if (data[base + x] > 0) { hasInk = true; break; }
+                if (data[base + x] > 0) inkCount++;
             }
-            if (hasInk) {
+            if (inkCount >= 2) {
                 if (top === -1) top = y;
                 bottom = y;
+            }
+        }
+        // Fallback nếu ký tự quá mảnh (chỉ 1px)
+        if (top === -1) {
+            for (let y = band.y0; y < band.y1; y++) {
+                let hasInk = false;
+                const base = y * cols;
+                for (let x = box.x0; x < box.x1; x++) {
+                    if (data[base + x] > 0) { hasInk = true; break; }
+                }
+                if (hasInk) {
+                    if (top === -1) top = y;
+                    bottom = y;
+                }
             }
         }
         if (top === -1) return { y0: band.y0, y1: band.y1 };

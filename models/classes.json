@@ -1,5 +1,5 @@
 {
-  "model_name": "Model 4.0 (13 Classes: 0-9, $, %, MGMD)",
+  "model_name": "Model 5.0 (13 Classes with Glare & Blur Robustness)",
   "classes": [
     "0",
     "1",
@@ -27,21 +27,21 @@
     32,
     128
   ],
-  "best_epoch": 1,
-  "best_val_accuracy": 0.9973498233215548,
+  "best_epoch": 2,
+  "best_val_accuracy": 1.0,
   "dataset_statistics": {
-    "0": 602,
-    "1": 1217,
-    "2": 1468,
-    "3": 322,
-    "4": 378,
-    "5": 443,
-    "6": 850,
-    "7": 215,
-    "8": 489,
-    "9": 506,
-    "dollar": 474,
-    "percent": 509,
-    "mgmd": 112
+    "0": 843,
+    "1": 1704,
+    "2": 2055,
+    "3": 451,
+    "4": 526,
+    "5": 620,
+    "6": 1190,
+    "7": 300,
+    "8": 685,
+    "9": 708,
+    "dollar": 664,
+    "percent": 713,
+    "mgmd": 157
   }
 }
