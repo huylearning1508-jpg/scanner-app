@@ -229,16 +229,67 @@ const ScanStep = Object.freeze({
         console.log(`[OCR ${label}] ${summary}`);
     }
 
-    function handleOcrResult(rows, step) {
-        logRecognizedRows(step, rows);
+    function handleOcrResult(payload, step) {
         if (step === 'step1' && currentStep === ScanStep.STEP1_SCANNING) {
-            const result = OcrParser.parseStep1(rows);
-            if (result && result.allValid) onStep1Captured(result);
+            if (payload && payload.type === 'mgmd_locked') {
+                triggerAutoSnapStep1();
+            } else if (Array.isArray(payload)) {
+                logRecognizedRows(step, payload);
+                const result = OcrParser.parseStep1(payload);
+                if (result && result.allValid) onStep1Captured(result);
+            }
         } else if (step === 'step2' && currentStep === ScanStep.STEP2_SCANNING) {
+            const rows = payload && payload.rows ? payload.rows : (Array.isArray(payload) ? payload : []);
+            logRecognizedRows(step, rows);
             for (const row of rows) {
                 const result = OcrParser.parseStep2(row.tokens);
                 if (result) { onStep2Captured(result); break; }
             }
+        }
+    }
+
+    async function triggerAutoSnapStep1() {
+        if (currentStep !== ScanStep.STEP1_SCANNING) return;
+        OcrEngine.setPaused(true);
+
+        // Hiệu ứng bắt dính thị giác: đường mép dưới chuyển xanh lá và sáng lên
+        const guideBottomLine = $('guideBottomLine');
+        if (guideBottomLine) {
+            guideBottomLine.style.stroke = '#00e676';
+            guideBottomLine.style.strokeWidth = '3.5';
+            guideBottomLine.style.strokeDasharray = 'none';
+        }
+        HapticUtil.vibrateTick();
+        BeepUtil.playBeep();
+
+        // 1. Chụp đóng băng khung hình ngay lập tức (loại bỏ rung tay)
+        const frame = CameraController.captureFrame();
+        freezePreview();
+        currentStep = ScanStep.STEP1_FROZEN;
+        tvScanStatus.textContent = '🎯 Đã khóa mốc MGMD! Đang đọc thông số…';
+
+        // 2. Chạy bóc tách đầy đủ trên ảnh tĩnh vừa chụp
+        let result = null;
+        try {
+            const rows = await OcrEngine.processFrame(frame || CameraController.getVideoElement(), { tokenizeRows: false });
+            logRecognizedRows('step1-auto-snap', rows);
+            result = OcrParser.parseStep1(rows);
+        } catch (e) {
+            console.error('Lỗi đọc thông số sau khi khóa mốc MGMD', e);
+        }
+
+        if (result && result.allValid) {
+            onStep1Captured(result);
+        } else {
+            if (result) {
+                if (result.machineNo !== null && !isNaN(result.machineNo)) etMachineId.value = result.machineNo;
+                if (result.rtp1 !== null && !isNaN(result.rtp1)) etParamX.value = result.rtp1;
+                if (result.rtp2 !== null && !isNaN(result.rtp2)) etParamY.value = result.rtp2;
+            }
+            tvScanStatus.textContent = result && (result.machineNo || result.rtp1 || result.rtp2)
+                ? 'Đã đọc một số thông số. Kiểm tra lại hoặc bấm [Quét lại].'
+                : 'Chưa nhận diện trọn vẹn thông số. Vui lòng bấm [Quét lại] và căn chuẩn.';
+            setActionButtonsEnabled(true);
         }
     }
 
@@ -327,6 +378,12 @@ const ScanStep = Object.freeze({
     }
 
     function unfreezePreview() {
+        const guideBottomLine = $('guideBottomLine');
+        if (guideBottomLine) {
+            guideBottomLine.style.stroke = '';
+            guideBottomLine.style.strokeWidth = '';
+            guideBottomLine.style.strokeDasharray = '';
+        }
         frozenImg.hidden = true;
         frozenImg.src = '';
         frozenBorder.hidden = true;
@@ -602,7 +659,7 @@ const ScanStep = Object.freeze({
 
         switch (currentStep) {
             case ScanStep.STEP1_SCANNING:
-                tvScanStatus.textContent = 'Bước 1/2 — Căn mép dưới khung xanh sát dòng MGMD… (hoặc Chụp tay)';
+                tvScanStatus.textContent = 'Bước 1/2 — Căn mép dưới vào chữ MGMD (máy sẽ tự chụp)…';
                 setActionButtonsEnabled(false);
                 break;
             case ScanStep.STEP1_FROZEN:

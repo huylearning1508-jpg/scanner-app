@@ -265,6 +265,66 @@ const OcrEngine = (() => {
         }
     }
 
+    const bottomStripCanvas = document.createElement('canvas');
+
+    /**
+     * DÒ MỐC MGMD SIÊU TỐC Ở DẢI 11.5% ĐÁY ROI (Camera Liveview Trigger):
+     * Cắt trực tiếp dải 11.5% ở mép dưới của khung ngắm từ frameSource (~420x70px).
+     * Chỉ threshold dải này và đưa cụm chữ đầu vào Model 5.0 để kiểm tra nhãn 'mgmd'.
+     * Chạy chỉ mất ~5ms, giúp đạt 30-60 FPS mượt mà và tự động kích hoạt SNAP khi khớp.
+     * @param {HTMLVideoElement|HTMLCanvasElement} frameSource
+     * @returns {Promise<{detected: boolean, confidence: number}|null>}
+     */
+    async function checkBottomMgmdAnchor(frameSource) {
+        if (!frameSource) return null;
+        const vw = frameSource.videoWidth || frameSource.width;
+        const vh = frameSource.videoHeight || frameSource.height;
+        if (!vw || !vh) return null;
+
+        const coords = getGuideCropCoords(vw, vh);
+        if (!coords) return null;
+
+        // Cắt đúng 11.5% ở mép dưới cùng của khung ngắm (khoảng 65-72px)
+        const BOTTOM_RATIO = 0.115;
+        const shBottom = Math.max(1, Math.round(coords.sh * BOTTOM_RATIO));
+        const syBottom = coords.sy + coords.sh - shBottom;
+        const outHBottom = Math.max(1, Math.round(coords.outH * BOTTOM_RATIO));
+
+        bottomStripCanvas.width = coords.outW;
+        bottomStripCanvas.height = outHBottom;
+        const sCtx = bottomStripCanvas.getContext('2d');
+        sCtx.drawImage(frameSource, coords.sx, syBottom, coords.sw, shBottom, 0, 0, coords.outW, outHBottom);
+
+        const { binMat, grayMat } = ImageProcessing.thresholdAndDedither(bottomStripCanvas);
+        try {
+            const bands = ImageProcessing.segmentRows(binMat, 6);
+            if (bands.length === 0) return null;
+
+            // Lấy dòng nằm sát đáy nhất trong dải này
+            const rowBand = bands[bands.length - 1];
+            const tokens = ImageProcessing.segmentCharsIntoTokens(binMat, rowBand, 12);
+            if (tokens.length === 0) return null;
+
+            const t0 = tokens[0];
+            const x0 = t0[0].x0;
+            const x1 = t0[t0.length - 1].x1;
+            const tw = x1 - x0;
+
+            // Cụm chữ MGMD phải nằm ở bên trái (x0 < 45% chiều rộng), chiều rộng khoảng 60-250px
+            if (x0 > binMat.cols * 0.45 || tw < 60 || tw > 250) return null;
+
+            const clusterImage = ImageProcessing.cropClusterForClassifier(grayMat, binMat, rowBand, x0, x1);
+            const classified = await DigitClassifier.classifyBatch([clusterImage]);
+            if (classified.length > 0 && classified[0].rawClass === 'mgmd' && classified[0].confidence >= 0.85) {
+                return { detected: true, confidence: classified[0].confidence };
+            }
+            return null;
+        } finally {
+            binMat.delete();
+            grayMat.delete();
+        }
+    }
+
     /**
      * @param {() => HTMLCanvasElement|null} getFrame
      * @param {() => 'step1'|'step2'} getStep
@@ -273,6 +333,7 @@ const OcrEngine = (() => {
     function startLoop(getFrame, getStep, onResult) {
         running = true;
         paused = false;
+        let consecutiveMgmdHits = 0;
 
         const scheduleNext = () => {
             if (!running) return;
@@ -286,14 +347,34 @@ const OcrEngine = (() => {
 
         const tick = async () => {
             if (!running) return;
-            if (paused) { loopHandle = setTimeout(tick, 150); return; }
+            if (paused) {
+                consecutiveMgmdHits = 0;
+                loopHandle = setTimeout(tick, 150);
+                return;
+            }
 
             try {
                 const source = getFrame();
                 if (source) {
                     const step = getStep();
-                    const rows = await processFrame(source, { tokenizeRows: step === 'step2' });
-                    if (!paused && rows && rows.length > 0) onResult(rows, step);
+                    if (step === 'step1') {
+                        // BƯỚC 1: Dò mốc MGMD siêu tốc ở mép đáy 11.5%
+                        const anchor = await checkBottomMgmdAnchor(source);
+                        if (!paused && anchor && anchor.detected) {
+                            consecutiveMgmdHits++;
+                            // Tự động kích hoạt khi nhận diện cực kỳ tự tin (>= 92%) hoặc 2 frame liên tiếp (>= 85%)
+                            if (anchor.confidence >= 0.92 || consecutiveMgmdHits >= 2) {
+                                consecutiveMgmdHits = 0;
+                                onResult({ type: 'mgmd_locked', anchor }, step);
+                            }
+                        } else {
+                            consecutiveMgmdHits = 0;
+                        }
+                    } else {
+                        // BƯỚC 2: Quét ngày Clear RAM
+                        const rows = await processFrame(source, { tokenizeRows: true });
+                        if (!paused && rows && rows.length > 0) onResult({ type: 'rows', rows }, step);
+                    }
                 }
             } catch (e) {
                 console.error('Lỗi xử lý khung hình', e);
@@ -326,6 +407,7 @@ const OcrEngine = (() => {
     return {
         init, startLoop, stopLoop, setPaused, isPaused,
         processFrame,
+        checkBottomMgmdAnchor,
         getGuideCropCoords,
         getLastCroppedBandCanvas
     };
