@@ -618,5 +618,9 @@ const ScanStep = Object.freeze({
         OcrEngine.stopLoop();
     });
 
-    document.addEventListener('DOMContentLoaded', bootstrap);
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', bootstrap);
+    } else {
+        bootstrap();
+    }
 })();

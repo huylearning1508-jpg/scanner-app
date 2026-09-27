@@ -284,6 +284,9 @@ const OcrEngine = (() => {
             }
             clearTimeout(loopHandle);
             loopHandle = null;
+        }
+    }
+
     /**
      * Đọc chuỗi ký tự từ 1 ô/vùng ảnh cắt riêng lẻ (do YOLO phát hiện)
      * @param {HTMLCanvasElement} cropCanvas ảnh cắt riêng của ô
