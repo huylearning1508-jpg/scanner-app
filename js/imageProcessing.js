@@ -127,27 +127,30 @@ const ImageProcessing = (() => {
 
         // Xóa viền biên trái / phải (3px) để triệt tiêu viền khung cắt / viền màn hình
         for (let y = 0; y < rCount; y++) {
-            for (let x = 0; x < 3; x++) cData[y * cCount + x] = 0;
-            for (let x = Math.max(0, cCount - 3); x < cCount; x++) cData[y * cCount + x] = 0;
+            const rowBase = y * cCount;
+            for (let x = 0; x < 3; x++) cData[rowBase + x] = 0;
+            for (let x = Math.max(0, cCount - 3); x < cCount; x++) cData[rowBase + x] = 0;
         }
 
-        // Các cột có tỉ lệ điểm trắng > 30% chiều cao là đường kẻ dọc cột, gây nhiễu dính liền các dòng
-        const colsToClear = [];
-        for (let x = 3; x < cCount - 3; x++) {
-            let colWhite = 0;
-            for (let y = 0; y < rCount; y++) {
-                if (cData[y * cCount + x] > 0) colWhite++;
-            }
-            if (colWhite > rCount * 0.30) {
-                colsToClear.push(x);
+        // Đếm điểm trắng theo từng cột với truy cập Row-Major tuần tự (tối ưu cache CPU)
+        const colWhite = new Int32Array(cCount);
+        for (let y = 0; y < rCount; y++) {
+            const rowBase = y * cCount;
+            for (let x = 3; x < cCount - 3; x++) {
+                if (cData[rowBase + x] > 0) colWhite[x]++;
             }
         }
-        for (const cx of colsToClear) {
-            for (let dx = -1; dx <= 1; dx++) {
-                const targetX = cx + dx;
-                if (targetX >= 0 && targetX < cCount) {
-                    for (let y = 0; y < rCount; y++) {
-                        cData[y * cCount + targetX] = 0;
+
+        // Ngưỡng 20%: chữ số chỉ cao 3-5% chiều cao, bất kỳ cột nào có >20% pixel trắng đều là đường kẻ bảng/viền rác
+        const thCol = Math.round(rCount * 0.20);
+        for (let x = 3; x < cCount - 3; x++) {
+            if (colWhite[x] > thCol) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    const targetX = x + dx;
+                    if (targetX >= 0 && targetX < cCount) {
+                        for (let y = 0; y < rCount; y++) {
+                            cData[y * cCount + targetX] = 0;
+                        }
                     }
                 }
             }
@@ -326,33 +329,45 @@ const ImageProcessing = (() => {
      * - Đặt ở giữa khung canvas 32x128 có viền trắng 255.
      * - Chuẩn hoá (v / 127.5) - 1.0 (dải [-1.0, 1.0]).
      */
-    function getBorderMedian(mat) {
-        const w = mat.cols;
-        const h = mat.rows;
-        const data = mat.data;
-        const borderPixels = [];
-
+    /**
+     * Tính median mức xám của viền ngoài bằng histogram 256 mức:
+     * O(N) cực nhanh, không cấp phát mảng, không tốn thời gian gọi .sort().
+     */
+    function getBorderMedianFast(data, w, h) {
+        const hist = new Uint16Array(256);
+        let total = 0;
         // Hàng trên cùng & hàng dưới cùng
+        const topRow = 0;
+        const btmRow = (h - 1) * w;
         for (let x = 0; x < w; x++) {
-            borderPixels.push(data[x]);
-            borderPixels.push(data[(h - 1) * w + x]);
+            hist[data[topRow + x]]++;
+            hist[data[btmRow + x]]++;
+            total += 2;
         }
         // Cột trái & cột phải
         for (let y = 1; y < h - 1; y++) {
-            borderPixels.push(data[y * w]);
-            borderPixels.push(data[y * w + (w - 1)]);
+            const rowOffset = y * w;
+            hist[data[rowOffset]]++;
+            hist[data[rowOffset + (w - 1)]]++;
+            total += 2;
         }
-        if (borderPixels.length === 0) return 255;
-        borderPixels.sort((a, b) => a - b);
-        return borderPixels[Math.floor(borderPixels.length / 2)];
+        if (total === 0) return 255;
+        const mid = total >> 1;
+        let count = 0;
+        for (let v = 0; v < 256; v++) {
+            count += hist[v];
+            if (count >= mid) return v;
+        }
+        return 255;
     }
 
     /**
-     * Tiền xử lý chuẩn cho Model 4.0 (32x128) đồng nhất 100% với Python predict_model4.py:
-     * - Giữ nguyên aspect ratio, co/giãn về kích thước (newW, newH) vừa vặn trong 32x128
-     * - Lấy median các pixel viền ngoài (border median) làm màu nền đệm
-     * - Đặt ký tự vào chính giữa canvas 32x128
-     * - Chuẩn hoá điểm ảnh: (pixel / 127.5) - 1.0 (dải [-1.0, 1.0])
+     * Tiền xử lý chuẩn cho Model 4.0 (32x128):
+     * Tối ưu hóa hiệu năng cao:
+     * - Co/giãn giữ nguyên tỉ lệ aspect ratio.
+     * - Tính padColor qua getBorderMedianFast (O(N)).
+     * - Ghi trực tiếp vào Float32Array(4096), triệt tiêu hoàn toàn việc tạo canvasMat,
+     *   roiTarget, copyTo trong WASM.
      */
     function padAndNormalizeForModel4(cropMat) {
         const targetH = 32;
@@ -367,22 +382,25 @@ const ImageProcessing = (() => {
         const resized = new cv.Mat();
         cv.resize(cropMat, resized, new cv.Size(newW, newH), 0, 0, scale < 1 ? cv.INTER_AREA : cv.INTER_CUBIC);
 
-        const padColor = getBorderMedian(resized);
-        const canvasMat = new cv.Mat(targetH, targetW, cv.CV_8UC1, new cv.Scalar(padColor));
+        const rData = resized.data;
+        const padColor = getBorderMedianFast(rData, newW, newH);
+        const padNorm = (padColor / 127.5) - 1.0;
+
+        const out = new Float32Array(4096);
+        out.fill(padNorm);
+
         const xOff = Math.floor((targetW - newW) / 2);
         const yOff = Math.floor((targetH - newH) / 2);
-        const roiTarget = canvasMat.roi(new cv.Rect(xOff, yOff, newW, newH));
-        resized.copyTo(roiTarget);
-        roiTarget.delete();
 
-        const out = new Float32Array(targetH * targetW);
-        const data = canvasMat.data;
-        for (let i = 0; i < targetH * targetW; i++) {
-            out[i] = (data[i] / 127.5) - 1.0;
+        for (let y = 0; y < newH; y++) {
+            const srcBase = y * newW;
+            const dstBase = (yOff + y) * targetW + xOff;
+            for (let x = 0; x < newW; x++) {
+                out[dstBase + x] = (rData[srcBase + x] / 127.5) - 1.0;
+            }
         }
 
         resized.delete();
-        canvasMat.delete();
         return out;
     }
 
