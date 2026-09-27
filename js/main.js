@@ -381,13 +381,17 @@ const ScanStep = Object.freeze({
     }
 
     function onSavePhotoClicked() {
-        const url = frozenImg.src;
+        // Ưu tiên lưu ảnh vùng crop khung ngắm thực tế mà OCR Engine nhận diện (để kiểm tra trực quan)
+        const cropCanvas = OcrEngine.getLastCroppedBandCanvas();
+        const url = cropCanvas ? cropCanvas.toDataURL('image/jpeg', 0.95) : frozenImg.src;
         if (!url) return;
         const a = document.createElement('a');
         a.href = url;
         const stepName = currentStep === ScanStep.STEP1_FROZEN ? 'step1' : 'step2';
-        a.download = `debug_${stepName}_mach${activeMachineNo || 'unknown'}_${Date.now()}.png`;
+        a.download = `debug_${stepName}_crop_mach${activeMachineNo || 'unknown'}_${Date.now()}.jpg`;
+        document.body.appendChild(a);
         a.click();
+        document.body.removeChild(a);
     }
 
     // ============================== XÁC NHẬN BƯỚC 1 / BƯỚC 2 ==============================

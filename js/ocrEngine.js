@@ -58,25 +58,51 @@ const OcrEngine = (() => {
     }
 
     function getGuideCropCoords(vw, vh) {
-        if (cachedCoords && cachedCoords.vw === vw && cachedCoords.vh === vh) {
+        const videoEl = document.getElementById('video');
+        if (!videoEl) return null;
+
+        const containerW = videoEl.clientWidth;
+        const containerH = videoEl.clientHeight;
+        if (containerW <= 0 || containerH <= 0) return null;
+
+        if (cachedCoords && 
+            cachedCoords.vw === vw && 
+            cachedCoords.vh === vh && 
+            cachedCoords.cw === containerW && 
+            cachedCoords.ch === containerH) {
             return cachedCoords;
         }
-        const videoEl = document.getElementById('video');
+
         const guideEl = document.getElementById('guideRect');
-        if (!videoEl || !guideEl) return null;
+        // Đọc toạ độ phần trăm trực tiếp từ SVG rect (chuẩn xác 100% không phụ thuộc scroll hay layout reflow)
+        let gxPct = 30, gyPct = 15, gwPct = 65, ghPct = 70;
+        if (guideEl) {
+            gxPct = parseFloat(guideEl.getAttribute('x')) || 30;
+            gyPct = parseFloat(guideEl.getAttribute('y')) || 15;
+            gwPct = parseFloat(guideEl.getAttribute('width')) || 65;
+            ghPct = parseFloat(guideEl.getAttribute('height')) || 70;
+        }
 
-        const videoRect = videoEl.getBoundingClientRect();
-        const guideRect = guideEl.getBoundingClientRect();
-        if (videoRect.width <= 0 || videoRect.height <= 0) return null;
+        // Tỷ lệ scale khi CSS object-fit: cover lấp đầy cameraContainer
+        const scale = Math.max(containerW / vw, containerH / vh);
+        const renderedW = vw * scale;
+        const renderedH = vh * scale;
 
-        const scale = Math.max(videoRect.width / vw, videoRect.height / vh);
-        const originX = videoRect.left + (videoRect.width - vw * scale) / 2;
-        const originY = videoRect.top + (videoRect.height - vh * scale) / 2;
+        // Vị trí offset của video bên trong container (video căn giữa theo CSS object-position: 50% 50%)
+        const offX = (renderedW - containerW) / 2;
+        const offY = (renderedH - containerH) / 2;
 
-        const sx = Math.max(0, Math.round((guideRect.left - originX) / scale));
-        const sy = Math.max(0, Math.round((guideRect.top - originY) / scale));
-        const sw = Math.min(vw - sx, Math.round(guideRect.width / scale));
-        const sh = Math.min(vh - sy, Math.round(guideRect.height / scale));
+        // Toạ độ khung xanh trên container (pixel thực trên màn hình)
+        const boxLeft = (gxPct / 100) * containerW;
+        const boxTop = (gyPct / 100) * containerH;
+        const boxWidth = (gwPct / 100) * containerW;
+        const boxHeight = (ghPct / 100) * containerH;
+
+        // Quy đổi chính xác 1:1 sang toạ độ pixel của video gốc trong camera
+        const sx = Math.max(0, Math.round((boxLeft + offX) / scale));
+        const sy = Math.max(0, Math.round((boxTop + offY) / scale));
+        const sw = Math.min(vw - sx, Math.round(boxWidth / scale));
+        const sh = Math.min(vh - sy, Math.round(boxHeight / scale));
 
         let outW = sw, outH = sh;
         if (sw > PROCESSING_TARGET_WIDTH) {
@@ -85,7 +111,7 @@ const OcrEngine = (() => {
             outH = Math.round(sh * ratio);
         }
 
-        cachedCoords = { vw, vh, sx, sy, sw, sh, outW, outH };
+        cachedCoords = { vw, vh, cw: containerW, ch: containerH, sx, sy, sw, sh, outW, outH };
         return cachedCoords;
     }
 
@@ -278,8 +304,14 @@ const OcrEngine = (() => {
         }
     }
 
+    function getLastCroppedBandCanvas() {
+        return (workCanvas.width > 0 && workCanvas.height > 0) ? workCanvas : null;
+    }
+
     return {
         init, startLoop, stopLoop, setPaused, isPaused,
-        processFrame
+        processFrame,
+        getGuideCropCoords,
+        getLastCroppedBandCanvas
     };
 })();

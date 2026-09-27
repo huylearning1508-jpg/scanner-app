@@ -106,22 +106,14 @@ const ImageProcessing = (() => {
             21, 12
         );
 
-        // Đảo âm bản: chữ = trắng (255) trên nền đen (0), chuẩn cho
-        // connectedComponents (mong đợi foreground trắng).
-        const inv = new cv.Mat();
-        cv.bitwise_not(bin, inv);
-
-        // Bước 2: Tối ưu hóa siêu tốc — thay thế connectedComponents và 700.000 vòng lặp JS
-        // bằng toán tử hình thái học MORPH_OPEN thuần C++ WASM.
-        // Opening (erode + dilate) với kernel 2x2 loại bỏ triệt để các hạt dither 1-2px,
-        // trong khi bảo toàn 100% nét chữ số (dày 3-5px).
-        const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2));
+        // Đảo âm bản: chữ = trắng (255) trên nền đen (0) chuẩn cho tách dòng/ký tự.
+        // Bỏ hoàn toàn morphologyEx: tránh mòn nét chữ số mỏng và tiết kiệm thời gian xử lý WASM.
         const cleaned = new cv.Mat();
-        cv.morphologyEx(inv, cleaned, cv.MORPH_OPEN, kernel);
+        cv.bitwise_not(bin, cleaned);
 
-        src.delete(); bin.delete(); inv.delete(); kernel.delete();
+        src.delete(); bin.delete();
 
-        // Bước 3: Khử viền biên và đường kẻ dọc bảng biểu của màn hình máy đánh bạc
+        // Bước 2: Khử viền biên và đường kẻ dọc bảng biểu của màn hình máy đánh bạc
         const rCount = cleaned.rows, cCount = cleaned.cols;
         const cData = cleaned.data;
 
