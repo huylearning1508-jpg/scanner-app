@@ -54,19 +54,17 @@ const CameraController = (() => {
     async function startCamera() {
         diagLog.length = 0;
         logDiag('bắt đầu getUserMedia');
+
+        // Mở trực tiếp camera sau với cấu hình tối giản để phần cứng và trình duyệt mở ngay lập tức (< 200ms)
         try {
             stream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: { ideal: 'environment' },
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 }
-                },
+                video: { facingMode: { ideal: 'environment' } },
                 audio: false
             });
         } catch (e1) {
-            logDiag('Thử 720p không thành công, dùng fallback: ' + e1.message);
+            logDiag('Không mở được camera sau, fallback sang camera mặc định: ' + e1.message);
             stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: { ideal: 'environment' } },
+                video: true,
                 audio: false
             });
         }
@@ -74,46 +72,41 @@ const CameraController = (() => {
 
         videoEl.muted = true;
         videoEl.playsInline = true;
+        videoEl.setAttribute('playsinline', '');
+        videoEl.setAttribute('webkit-playsinline', '');
+        videoEl.setAttribute('autoplay', '');
+        videoEl.setAttribute('muted', '');
 
         videoEl.addEventListener('loadedmetadata', () => logDiag(`loadedmetadata (${videoEl.videoWidth}x${videoEl.videoHeight})`));
         videoEl.addEventListener('playing', () => logDiag('playing event'));
         videoEl.addEventListener('error', (e) => logDiag('video error: ' + (videoEl.error ? videoEl.error.message : e)));
-        videoEl.addEventListener('stalled', () => logDiag('stalled event'));
-        videoEl.addEventListener('suspend', () => logDiag('suspend event'));
 
-        // iOS Safari huỷ play() đang chờ (AbortError) nếu tab bị chuyển nền/
-        // khoá màn hình đúng lúc đó — quan sát thực tế: play() treo gần 1
-        // phút rồi bị "The operation was aborted", video đen vĩnh viễn vì
-        // trước đây chỉ gọi play() đúng 1 lần, không có cơ chế thử lại. Giờ
-        // tự động phát lại mỗi khi tab quay lại foreground.
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden && videoEl.srcObject && videoEl.paused) {
-                logDiag('tab quay lại foreground, thử play() lại');
-                videoEl.play().then(() => logDiag('play() lại thành công')).catch((e) => logDiag('play() lại vẫn lỗi: ' + e.message));
+                videoEl.play().catch(() => {});
             }
         });
         window.addEventListener('pageshow', () => {
             if (videoEl.srcObject && videoEl.paused) {
-                logDiag('pageshow, thử play() lại');
                 videoEl.play().catch(() => {});
             }
         });
 
         videoEl.srcObject = stream;
-        try {
-            await playWithRetry();
-            logDiag('play() resolved');
-        } catch (e) {
-            logDiag('play() bị từ chối: ' + e.message);
+        const playPromise = videoEl.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch((e) => logDiag('play() chờ tương tác: ' + e.message));
         }
 
         track = stream.getVideoTracks()[0];
-        logDiag(`track: readyState=${track.readyState} muted=${track.muted} enabled=${track.enabled} label=${track.label}`);
-        try {
-            const capabilities = track.getCapabilities ? track.getCapabilities() : {};
-            torchSupported = !!capabilities.torch;
-        } catch (e) {
-            torchSupported = false;
+        if (track) {
+            logDiag(`track: readyState=${track.readyState} label=${track.label}`);
+            try {
+                const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+                torchSupported = !!capabilities.torch;
+            } catch (e) {
+                torchSupported = false;
+            }
         }
     }
 

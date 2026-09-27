@@ -118,23 +118,36 @@ const ScanStep = Object.freeze({
             listenersAttached = true;
         }
 
-        try {
-            await CameraController.startCamera();
-            permissionOverlay.hidden = true;
-        } catch (e) {
-            console.error('Không thể mở camera', e);
-            permissionOverlay.hidden = false;
-            return;
-        }
-
-        btnFlash.style.display = CameraController.isTorchSupported() ? '' : 'none';
-
         showScanTab();
         initFirebaseSync();
         beginNewSession();
 
-        const ok = await initOcrEngineWithRetry();
-        if (ok) await startScanningAfterEngineReady();
+        // 1. Mở Camera và Nạp Model AI SONG SONG (Parallel)
+        // Camera mở ngay lập tức (< 0.2s) để người dùng thấy video liveview ngay,
+        // không bị chặn chờ tải model AI 18MB
+        const cameraPromise = (async () => {
+            try {
+                tvScanStatus.textContent = 'Đang mở camera…';
+                await CameraController.startCamera();
+                permissionOverlay.hidden = true;
+                btnFlash.style.display = CameraController.isTorchSupported() ? '' : 'none';
+                tvScanStatus.textContent = 'Camera đã sẵn sàng. Đang nạp model…';
+                return true;
+            } catch (e) {
+                console.error('Không thể mở camera', e);
+                permissionOverlay.hidden = false;
+                tvScanStatus.textContent = 'Lỗi camera: ' + e.message;
+                return false;
+            }
+        })();
+
+        const modelPromise = initOcrEngineWithRetry();
+
+        const [camOk, modelOk] = await Promise.all([cameraPromise, modelPromise]);
+        if (camOk && modelOk) {
+            await startScanningAfterEngineReady();
+            updateStatusUi();
+        }
     }
 
     async function startScanningAfterEngineReady() {
@@ -153,9 +166,11 @@ const ScanStep = Object.freeze({
         loadingOverlay.hidden = false;
         btnRetryLoad.hidden = true;
         loadingText.className = '';
-        loadingText.textContent = 'Đang nạp Model 4.0 (13 lớp: 0-9, $, %, MGMD)…';
+        loadingText.textContent = 'Đang nạp Model 4.0…';
         try {
-            await OcrEngine.init();
+            await OcrEngine.init((pct, info) => {
+                loadingText.textContent = `Đang nạp Model 4.0: ${info}`;
+            });
             loadingOverlay.hidden = true;
             return true;
         } catch (e) {

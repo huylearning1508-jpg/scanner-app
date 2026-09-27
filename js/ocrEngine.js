@@ -51,9 +51,11 @@ const OcrEngine = (() => {
     window.addEventListener('resize', invalidateGuideCache);
     window.addEventListener('orientationchange', invalidateGuideCache);
 
-    async function init() {
-        await ImageProcessing.waitForOpenCv();
-        await DigitClassifier.init();
+    async function init(onProgress = null) {
+        await Promise.all([
+            ImageProcessing.waitForOpenCv(),
+            DigitClassifier.init('models/digit_model.onnx', 'models/classes.json', onProgress)
+        ]);
     }
 
     function setLiveFilterEnabled(value) { liveFilterEnabled = value; }

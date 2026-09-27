@@ -17,34 +17,74 @@ const DigitClassifier = (() => {
     let classes = null;     // Mảng nhãn hiển thị: ['0','1','2','3','4','5','6','7','8','9','$','%','MGMD']
     let rawClasses = null;  // Mảng nhãn gốc: ['0','1','2','3','4','5','6','7','8','9','dollar','percent','mgmd']
 
-    async function fetchBufferWithCache(url) {
+    async function fetchBufferWithCache(url, onProgress) {
         if ('caches' in window) {
             try {
                 const cache = await caches.open('onnx-model-cache-v4');
                 const match = await cache.match(url);
-                if (match) return await match.arrayBuffer();
-                const resp = await fetch(url);
-                if (resp.ok) {
-                    const cloned = resp.clone();
-                    cache.put(url, cloned).catch(() => {});
-                    return await resp.arrayBuffer();
+                if (match) {
+                    if (onProgress) onProgress(100, 'Tải tức thì từ bộ nhớ đệm');
+                    return await match.arrayBuffer();
                 }
             } catch (e) {
                 console.warn('[DigitClassifier] Cache warning:', e);
             }
         }
         const resp = await fetch(url);
-        return await resp.arrayBuffer();
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} khi tải ${url}`);
+
+        const contentLength = Number(resp.headers.get('content-length')) || 18481224;
+        if (!resp.body || typeof resp.body.getReader !== 'function') {
+            const buf = await resp.arrayBuffer();
+            if ('caches' in window) {
+                try {
+                    const cache = await caches.open('onnx-model-cache-v4');
+                    cache.put(url, new Response(buf.slice(0))).catch(() => {});
+                } catch (e) {}
+            }
+            return buf;
+        }
+
+        const reader = resp.body.getReader();
+        let received = 0;
+        const chunks = [];
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            received += value.length;
+            if (onProgress) {
+                const pct = Math.min(99, Math.round((received / contentLength) * 100));
+                const mb = (received / (1024 * 1024)).toFixed(1);
+                const totalMb = (contentLength / (1024 * 1024)).toFixed(1);
+                onProgress(pct, `${pct}% (${mb}/${totalMb} MB)`);
+            }
+        }
+        const totalBuffer = new Uint8Array(received);
+        let offset = 0;
+        for (const chunk of chunks) {
+            totalBuffer.set(chunk, offset);
+            offset += chunk.length;
+        }
+
+        if ('caches' in window) {
+            try {
+                const cache = await caches.open('onnx-model-cache-v4');
+                cache.put(url, new Response(totalBuffer.buffer)).catch(() => {});
+            } catch (e) {}
+        }
+        if (onProgress) onProgress(100, '100%');
+        return totalBuffer.buffer;
     }
 
-    async function init(modelUrl = 'models/digit_model.onnx', classesUrl = 'models/classes.json') {
+    async function init(modelUrl = 'models/digit_model.onnx', classesUrl = 'models/classes.json', onProgress = null) {
         if (ort.env && ort.env.wasm) {
             ort.env.wasm.simd = true;
             ort.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 2);
         }
 
         try {
-            const buffer = await fetchBufferWithCache(modelUrl);
+            const buffer = await fetchBufferWithCache(modelUrl, onProgress);
             try {
                 session = await ort.InferenceSession.create(buffer, {
                     executionProviders: ['webgl'],
