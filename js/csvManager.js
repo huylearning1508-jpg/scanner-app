@@ -49,6 +49,14 @@ const CsvManager = (() => {
     }
 
     function recordToRow(record) {
+        if (Array.isArray(record)) {
+            const scanTime = record[0] ?? '';
+            const machineNo = record[1] ?? '';
+            const rtp1 = record[2] ?? '';
+            const rtp2 = record[3] ?? '';
+            const ramClearDateStr = record[6] ?? '';
+            return [machineNo, rtp1, rtp2, ramClearDateStr, scanTime].map(escapeCsv).join(',');
+        }
         return [record.machineNo, record.rtp1, record.rtp2, record.ramClearDateStr, record.scanTime]
             .map(escapeCsv).join(',');
     }

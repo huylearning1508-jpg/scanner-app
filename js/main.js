@@ -201,7 +201,7 @@ const ScanStep = Object.freeze({
         hideBadge();
         unfreezePreview();
         postSessionPanel.hidden = true;
-        btnConfirm.textContent = 'Tiếp tục quét ngày Clear RAM ➔';
+        btnConfirm.textContent = 'Xác nhận & Lưu máy ➔';
         updateStatusUi();
     }
 
@@ -455,13 +455,13 @@ const ScanStep = Object.freeze({
 
     async function onConfirmClicked() {
         if (currentStep === ScanStep.STEP1_FROZEN) {
-            handleConfirmStep1();
+            await handleConfirmStep1();
         } else if (currentStep === ScanStep.STEP2_FROZEN) {
             await handleConfirmStep2();
         }
     }
 
-    function handleConfirmStep1() {
+    async function handleConfirmStep1() {
         const machStr = etMachineId.value.trim();
         const r1Str = etParamX.value.trim();
         const r2Str = etParamY.value.trim();
@@ -490,9 +490,60 @@ const ScanStep = Object.freeze({
             return;
         }
 
-        showBadge(mach);
+        // Giai đoạn 1: Lưu máy ngay lập tức và chuyển trực tiếp sang quét máy mới
+        const scanTimestamp = nowScanTime();
+        const ramClearDateStr = '';
+
+        const csvRecord = {
+            machineNo: mach,
+            rtp1: r1,
+            rtp2: r2,
+            ramClearDateStr: ramClearDateStr,
+            scanTime: scanTimestamp,
+        };
+
+        const fieldReading = {
+            scan_time: scanTimestamp,
+            scanTime: scanTimestamp,
+            machine_no: mach,
+            machineNo: mach,
+            rtp1: r1,
+            rtp2: r2,
+            total_meters: 0,
+            periodic_meters: 0,
+            ram_clear_date: ramClearDateStr,
+            ramClearDateStr: ramClearDateStr,
+            ramClearDate: null,
+            confidence: {
+                machineNo: 1, rtp1: 1, rtp2: 1, anchorFound: true
+            },
+            auto_corrected: etParamX.dataset.autoCorrected === 'true' || etParamY.dataset.autoCorrected === 'true',
+            autoCorrected: {
+                rtp1: etParamX.dataset.autoCorrected === 'true',
+                rtp2: etParamY.dataset.autoCorrected === 'true',
+            },
+            confirmed_at: Date.now(),
+            confirmedAt: Date.now(),
+        };
+
+        const saved = await CsvManager.appendRecord(csvRecord);
+        if (saved) {
+            scannedCount++;
+            updateScannedCountUi();
+        } else {
+            alert('Lỗi ghi file CSV — dữ liệu vẫn được giữ tạm, hãy thử [Chia sẻ file CSV] để tải về!');
+        }
+
+        FirebaseManager.pushFieldReading(fieldReading).then((ok) => {
+            tvCloudStatus.textContent = ok ? '☁ Firebase: đã đồng bộ' : '💾 Đã lưu bộ nhớ máy (offline)';
+            tvCloudStatus.className = ok ? 'cloud-ok' : 'cloud-warn';
+        });
+
+        HapticUtil.vibrateTick();
+        hideBadge();
+        clearAllFields();
         btnConfirm.textContent = 'Xác nhận & Lưu máy ➔';
-        currentStep = ScanStep.STEP2_SCANNING;
+        currentStep = ScanStep.STEP1_SCANNING;
         unfreezePreview();
         updateStatusUi();
     }
@@ -659,11 +710,13 @@ const ScanStep = Object.freeze({
 
         switch (currentStep) {
             case ScanStep.STEP1_SCANNING:
-                tvScanStatus.textContent = 'Bước 1/2 — Căn mép dưới vào chữ MGMD (máy sẽ tự chụp)…';
+                tvScanStatus.textContent = 'Căn mép dưới vào chữ MGMD (máy sẽ tự chụp)…';
+                btnConfirm.textContent = 'Xác nhận & Lưu máy ➔';
                 setActionButtonsEnabled(false);
                 break;
             case ScanStep.STEP1_FROZEN:
-                tvScanStatus.textContent = 'Đã bắt được thông số. Kiểm tra và bấm Tiếp tục.';
+                tvScanStatus.textContent = 'Đã bắt được thông số. Kiểm tra và bấm [Xác nhận & Lưu máy].';
+                btnConfirm.textContent = 'Xác nhận & Lưu máy ➔';
                 setActionButtonsEnabled(true);
                 break;
             case ScanStep.STEP2_SCANNING:

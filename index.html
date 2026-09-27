@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="css/style.css?v=11" />
     <script>
         // Tự động ép xóa CacheStorage và reload nếu chưa nâng lên bản build mới nhất
-        var CURRENT_APP_VERSION = 'v20_20260928';
+        var CURRENT_APP_VERSION = 'v21_20260928';
         if (localStorage.getItem('app_build_version') !== CURRENT_APP_VERSION) {
             localStorage.setItem('app_build_version', CURRENT_APP_VERSION);
             if ('serviceWorker' in navigator) {
@@ -113,21 +113,24 @@
                 </div>
             </div>
 
-            <label class="field-label">Ngày Clear RAM</label>
-            <div class="row3">
-                <input id="etDay" type="text" inputmode="numeric" placeholder="Ngày" />
-                <select id="selMonth">
-                    <option value="1">Jan</option><option value="2">Feb</option><option value="3">Mar</option>
-                    <option value="4">Apr</option><option value="5">May</option><option value="6">Jun</option>
-                    <option value="7">Jul</option><option value="8">Aug</option><option value="9">Sep</option>
-                    <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
-                </select>
-                <input id="etYear" type="text" inputmode="numeric" placeholder="Năm" />
+            <!-- GIAI ĐOẠN 2: QUÉT NGÀY CLEAR RAM (ẨN TRONG GIAI ĐOẠN 1) -->
+            <div id="clearRamSection" style="display: none;">
+                <label class="field-label">Ngày Clear RAM</label>
+                <div class="row3">
+                    <input id="etDay" type="text" inputmode="numeric" placeholder="Ngày" />
+                    <select id="selMonth">
+                        <option value="1">Jan</option><option value="2">Feb</option><option value="3">Mar</option>
+                        <option value="4">Apr</option><option value="5">May</option><option value="6">Jun</option>
+                        <option value="7">Jul</option><option value="8">Aug</option><option value="9">Sep</option>
+                        <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
+                    </select>
+                    <input id="etYear" type="text" inputmode="numeric" placeholder="Năm" />
+                </div>
             </div>
 
             <div class="row2">
                 <button id="btnRescan" class="btn btn-secondary">↺ Quét lại</button>
-                <button id="btnConfirm" class="btn btn-primary btn-wide">Tiếp tục quét ngày Clear RAM ➔</button>
+                <button id="btnConfirm" class="btn btn-primary btn-wide">Xác nhận & Lưu máy ➔</button>
             </div>
 
             <div id="postSessionPanel" hidden>
@@ -154,10 +157,10 @@
     <script src="js/digitClassifier.js?v=16"></script>
     <script src="js/ocrParser.js?v=18"></script>
     <script src="js/ocrEngine.js?v=18"></script>
-    <script src="js/csvManager.js?v=6"></script>
+    <script src="js/csvManager.js?v=21"></script>
     <script src="js/cameraController.js?v=16"></script>
     <script src="js/dataView.js?v=6"></script>
     <script src="js/util.js?v=6"></script>
-    <script src="js/main.js?v=18"></script>
+    <script src="js/main.js?v=21"></script>
 </body>
 </html>
