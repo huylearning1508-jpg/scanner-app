@@ -62,7 +62,42 @@ const CsvManager = (() => {
     }
 
     function buildFullCsvText() {
-        return [CSV_HEADER, ...rows].join('\r\n') + '\r\n';
+        // Sắp xếp các dòng theo số máy tăng dần (thứ tự số học)
+        const sorted = [...rows].sort((a, b) => {
+            const getMach = (r) => {
+                const firstCol = String(r).split(',')[0].replace(/"/g, '').trim();
+                const num = Number(firstCol);
+                return Number.isNaN(num) ? 999999 : num;
+            };
+            return getMach(a) - getMach(b);
+        });
+        return [CSV_HEADER, ...sorted].join('\r\n') + '\r\n';
+    }
+
+    /**
+     * Cập nhật thông số một máy trong danh sách hàng CSV hiện tại
+     */
+    function updateRecord(oldMachineNo, updatedFields) {
+        const oldStr = String(oldMachineNo).trim();
+        const idx = rows.findIndex((r) => {
+            const firstCol = String(r).split(',')[0].replace(/"/g, '').trim();
+            return firstCol === oldStr;
+        });
+        if (idx !== -1) {
+            const parts = rows[idx].split(',').map(s => s.replace(/^"|"$/g, ''));
+            const newRecord = {
+                machineNo: updatedFields.machineNo !== undefined ? updatedFields.machineNo : (updatedFields.machine_no !== undefined ? updatedFields.machine_no : parts[0]),
+                rtp1: updatedFields.rtp1 !== undefined ? updatedFields.rtp1 : parts[1],
+                rtp2: updatedFields.rtp2 !== undefined ? updatedFields.rtp2 : parts[2],
+                ramClearDateStr: updatedFields.ramClearDateStr !== undefined ? updatedFields.ramClearDateStr : (parts[3] || ''),
+                scanTime: parts[4] || '',
+            };
+            rows[idx] = recordToRow(newRecord);
+            persistToLocalStorage();
+            if (fileHandle) flushToFileHandle();
+            return true;
+        }
+        return false;
     }
 
     function persistToLocalStorage() {
@@ -215,6 +250,7 @@ const CsvManager = (() => {
         resumeSession,
         loadPendingSession,
         appendRecord,
+        updateRecord,
         endSession,
         reset,
         getCurrentFileName,

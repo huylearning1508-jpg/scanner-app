@@ -68,6 +68,7 @@ const ScanStep = Object.freeze({
     let scannedCount = 0;
     let activeMachineNo = '';
     let engineStarted = false;
+    let currentRoiBase64 = '';
 
     function pad2(n) { return String(n).padStart(2, '0'); }
     function nowScanTime() {
@@ -197,6 +198,7 @@ const ScanStep = Object.freeze({
         }
         updateScannedCountUi();
         currentStep = ScanStep.STEP1_SCANNING;
+        currentRoiBase64 = '';
         clearAllFields();
         hideBadge();
         unfreezePreview();
@@ -278,6 +280,15 @@ const ScanStep = Object.freeze({
             console.error('Lỗi đọc thông số sau khi khóa mốc MGMD', e);
         }
 
+        try {
+            const cropCanvas = OcrEngine.getLastCroppedBandCanvas();
+            if (cropCanvas && cropCanvas.width > 0 && cropCanvas.height > 0) {
+                currentRoiBase64 = cropCanvas.toDataURL('image/jpeg', 0.72);
+            }
+        } catch (e) {
+            console.warn('Lỗi trích xuất ảnh ROI:', e);
+        }
+
         if (result && result.allValid) {
             onStep1Captured(result);
         } else {
@@ -328,6 +339,16 @@ const ScanStep = Object.freeze({
                 logRecognizedRows('step1-manual', rows);
                 result = OcrParser.parseStep1(rows);
             } catch (e) { console.error('Lỗi nhận diện khi chụp tay', e); }
+
+            try {
+                const cropCanvas = OcrEngine.getLastCroppedBandCanvas();
+                if (cropCanvas && cropCanvas.width > 0 && cropCanvas.height > 0) {
+                    currentRoiBase64 = cropCanvas.toDataURL('image/jpeg', 0.72);
+                }
+            } catch (e) {
+                console.warn('Lỗi trích xuất ảnh ROI:', e);
+            }
+
             if (result && result.allValid) {
                 onStep1Captured(result);
             } else {
@@ -423,6 +444,7 @@ const ScanStep = Object.freeze({
 
     function onRescanClicked() {
         if (currentStep === ScanStep.STEP1_FROZEN) {
+            currentRoiBase64 = '';
             clearAllFields();
             hideBadge();
             unfreezePreview();
@@ -524,6 +546,8 @@ const ScanStep = Object.freeze({
             },
             confirmed_at: Date.now(),
             confirmedAt: Date.now(),
+            image_base64: currentRoiBase64 || '',
+            imageBase64: currentRoiBase64 || '',
         };
 
         const saved = await CsvManager.appendRecord(csvRecord);
@@ -540,6 +564,7 @@ const ScanStep = Object.freeze({
         });
 
         HapticUtil.vibrateTick();
+        currentRoiBase64 = '';
         hideBadge();
         clearAllFields();
         btnConfirm.textContent = 'Xác nhận & Lưu máy ➔';

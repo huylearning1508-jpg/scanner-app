@@ -52,7 +52,18 @@ const FirebaseManager = (() => {
         try {
             localStorage.setItem(STORAGE_KEY_READINGS, JSON.stringify(list));
         } catch (e) {
-            console.warn('[FirebaseManager] Lỗi ghi localStorage:', e);
+            console.warn('[FirebaseManager] Lỗi ghi localStorage (có thể do dung lượng ảnh đầy), kích hoạt cơ chế dọn bớt ảnh cũ:', e);
+            try {
+                // Giữ ảnh cho 5 máy mới nhất, loại bỏ image_base64 ở các bản ghi cũ hơn để tiết kiệm bộ nhớ
+                const stripped = list.map((item, idx) => {
+                    if (idx < 5) return item;
+                    const { image_base64, imageBase64, ...rest } = item;
+                    return rest;
+                });
+                localStorage.setItem(STORAGE_KEY_READINGS, JSON.stringify(stripped));
+            } catch (e2) {
+                console.warn('[FirebaseManager] Vẫn không thể ghi localStorage:', e2);
+            }
         }
     }
 
@@ -136,7 +147,8 @@ const FirebaseManager = (() => {
             confirmed_by: record.confirmed_by || 'Staff',
             week_number: weekNum,
             year: year,
-            notes: record.notes || ''
+            notes: record.notes || '',
+            image_base64: record.image_base64 || record.imageBase64 || ''
         };
 
         let assignedId = 'loc_' + Date.now();
@@ -215,7 +227,8 @@ const FirebaseManager = (() => {
                 confirmed_by: r.confirmed_by || 'Staff',
                 week_number: r.week_number || getWeekNumber(new Date(r.confirmed_at || Date.now())),
                 year: r.year || new Date(r.confirmed_at || Date.now()).getFullYear(),
-                notes: r.notes || ''
+                notes: r.notes || '',
+                image_base64: r.image_base64 || r.imageBase64 || ''
             }));
 
             // Sắp xếp bản ghi mới nhất lên đầu
@@ -232,6 +245,69 @@ const FirebaseManager = (() => {
         return () => readingsRef.off('value', listener);
     }
 
+    /**
+     * Cập nhật bản ghi khi người dùng kiểm tra lại và sửa thông số trên web
+     */
+    async function updateFieldReading(id, updatedFields) {
+        const timestamp = Date.now();
+        const fields = {
+            ...updatedFields,
+            updated_at: timestamp
+        };
+        if (fields.machine_no !== undefined) {
+            fields.machine_no = Number(fields.machine_no);
+            fields.machineNo = Number(fields.machine_no);
+        }
+        if (fields.rtp1 !== undefined) fields.rtp1 = Number(fields.rtp1);
+        if (fields.rtp2 !== undefined) fields.rtp2 = Number(fields.rtp2);
+
+        // 1. Cập nhật localStorage
+        const localList = getLocalReadings();
+        const idx = localList.findIndex((r) => r.id === id);
+        if (idx !== -1) {
+            localList[idx] = { ...localList[idx], ...fields };
+            saveLocalReadings(localList);
+        }
+
+        // 2. Cập nhật Firebase Realtime Database
+        if (ready && db && id && !id.startsWith('loc_')) {
+            try {
+                await db.ref(`field_readings/${id}`).update(fields);
+                if (fields.machine_no !== undefined && !Number.isNaN(fields.machine_no)) {
+                    await db.ref(`machines/${fields.machine_no}`).update({
+                        'last_audit/machine_no': fields.machine_no,
+                        'last_audit/rtp1': fields.rtp1,
+                        'last_audit/rtp2': fields.rtp2,
+                        updated_at: timestamp
+                    });
+                }
+                return true;
+            } catch (err) {
+                console.error('[FirebaseManager] Lỗi updateFieldReading:', err);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Xóa 1 bản ghi
+     */
+    async function deleteFieldReading(id) {
+        const localList = getLocalReadings();
+        saveLocalReadings(localList.filter((r) => r.id !== id));
+        if (ready && db && id && !id.startsWith('loc_')) {
+            try {
+                await db.ref(`field_readings/${id}`).remove();
+                return true;
+            } catch (err) {
+                console.error('[FirebaseManager] Lỗi deleteFieldReading:', err);
+                return false;
+            }
+        }
+        return true;
+    }
+
     return {
         isConfigured,
         init,
@@ -239,6 +315,8 @@ const FirebaseManager = (() => {
         getWeekNumber,
         getLocalReadings,
         pushFieldReading,
+        updateFieldReading,
+        deleteFieldReading,
         listenFieldReadings
     };
 })();
