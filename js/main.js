@@ -594,9 +594,15 @@ const ScanStep = Object.freeze({
         const scanning = currentStep === ScanStep.STEP1_SCANNING || currentStep === ScanStep.STEP2_SCANNING;
         btnManualCapture.hidden = !scanning;
 
+        const guideBottomLine = $('guideBottomLine');
+        const guideBottomLabel = $('guideBottomLabel');
+        const isStep1 = (currentStep === ScanStep.STEP1_SCANNING);
+        if (guideBottomLine) guideBottomLine.style.display = isStep1 ? '' : 'none';
+        if (guideBottomLabel) guideBottomLabel.style.display = isStep1 ? '' : 'none';
+
         switch (currentStep) {
             case ScanStep.STEP1_SCANNING:
-                tvScanStatus.textContent = 'Bước 1/2 — Đang quét thông số máy… (hoặc bấm Chụp tay)';
+                tvScanStatus.textContent = 'Bước 1/2 — Căn mép dưới khung xanh sát dòng MGMD… (hoặc Chụp tay)';
                 setActionButtonsEnabled(false);
                 break;
             case ScanStep.STEP1_FROZEN:

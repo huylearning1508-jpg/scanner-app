@@ -144,8 +144,16 @@ const OcrEngine = (() => {
         const band = cropToGuideBand(frameCanvas);
         const { binMat, grayMat } = ImageProcessing.thresholdAndDedither(band);
         try {
-            const rowBands = ImageProcessing.segmentRows(binMat);
-            if (rowBands.length === 0) return [];
+            const allRowBands = ImageProcessing.segmentRows(binMat);
+            if (allRowBands.length === 0) return [];
+
+            // TỐI ƯU TỐC ĐỘ ĐỘT PHÁ THEO CĂN CHỈNH CỦA NGƯỜI DÙNG:
+            // Do người dùng căn cạnh đáy khung ngắm sát dòng MGMD, toàn bộ thông số
+            // cần nhận diện (MGMD, Denom, Machine No, RTP2, RTP1) chỉ nằm ở tối đa 5-6 dòng cuối cùng.
+            // Bỏ qua toàn bộ các dòng rác phía trên (N/A, 0.000%, tên game...) TRƯỚC KHI tokenize và gọi Model WebGL!
+            const rowBands = (!tokenizeRows && allRowBands.length > 6)
+                ? allRowBands.slice(-6)
+                : allRowBands;
 
             // Tách token trước (rẻ, chỉ đếm pixel) để biết tổng số "ký tự" phát
             // hiện được trước khi tốn công cắt/resize/classify từng cái. Frame

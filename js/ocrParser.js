@@ -33,18 +33,18 @@ const OcrParser = (() => {
             fixed = fixed.replace(/\$/g, '5');
         }
 
-        // 1. Ưu tiên số có dấu % đứng sau (ví dụ: 95.427%, 93.63%, 94.05%)
-        const pctMatch = fixed.match(/(8\d|9\d)(?:\.(\d+))?\s*%/);
-        if (pctMatch) {
-            const val = pctMatch[2] ? Number(pctMatch[1] + '.' + pctMatch[2]) : Number(pctMatch[1]);
-            if (val >= RTP_MIN && val <= RTP_MAX) return { val, autoCorrected: !pctMatch[2] };
-        }
-
-        // 2. Tìm số 8x hoặc 9x có dấu chấm thập phân (ví dụ: 95.427, 94.05)
-        const decMatch = fixed.match(/(8\d|9\d)\.(\d{2,4})/);
+        // 1. Chuẩn: Tìm số 8x hoặc 9x có dấu chấm thập phân (ví dụ: 95.427%, 94.05%, 92.030, 91.85)
+        const decMatch = fixed.match(/(8\d|9\d)\.(\d{2,4})\s*%?/);
         if (decMatch) {
             const val = Number(decMatch[1] + '.' + decMatch[2]);
             if (val >= RTP_MIN && val <= RTP_MAX) return { val, autoCorrected: false };
+        }
+
+        // 2. Mất dấu chấm nhưng có 4-5 chữ số liền nhau (ví dụ: 9405% -> 94.05, 94237% -> 94.237, 9185% -> 91.85)
+        const noDotMatch = fixed.match(/(8\d|9\d)(\d{2,3})\s*%/);
+        if (noDotMatch) {
+            const val = Number(noDotMatch[1] + '.' + noDotMatch[2]);
+            if (val >= RTP_MIN && val <= RTP_MAX) return { val, autoCorrected: true };
         }
 
         return null;
@@ -97,27 +97,22 @@ const OcrParser = (() => {
         let bestCandidate = null;
         let bestScore = -1;
 
-        // Quét tìm mốc MGMD (hoặc dòng Denom ngay trên MGMD)
-        for (let mIdx = 0; mIdx < rows.length; mIdx++) {
-            const row = rows[mIdx];
-            const isRowMgmd = row.isMgmd || (row.text && row.text.includes('MGMD'));
-
-            let mgmdIdx = -1;
-            if (isRowMgmd) {
-                mgmdIdx = mIdx;
-            } else if (isDenomRow(row.text)) {
-                mgmdIdx = mIdx + 1; // Denom nằm ngay trên MGMD 1 dòng
-            }
-
-            if (mgmdIdx === -1 || mgmdIdx < 2) continue;
-
-            // Đánh giá cấu trúc dòng phía trên theo đúng yêu cầu:
-            // mgmdIdx - 1: Denom ($0.01)
-            // mgmdIdx - 2: Machine No (13, 4, 3)
-            // mgmdIdx - 3: RTP 2 (93.63%, 94.05%)
-            // mgmdIdx - 4: RTP 1 (95.427%, 94.237%)
+        // Tối ưu theo vị trí người dùng căn mép dưới khung ngắm sát dòng MGMD:
+        // Đánh giá cấu trúc dòng tính từ mốc MGMD
+        const evaluateAnchor = (mgmdIdx) => {
+            if (mgmdIdx < 2) return;
 
             let score = 0;
+            // Điểm thưởng vị trí: Ưu tiên cao nhất cho mốc ở sát cạnh đáy khung ngắm
+            const distFromBottom = (rows.length - 1) - mgmdIdx;
+            if (distFromBottom === 0) {
+                score += 40; // MGMD là dòng cuối cùng sát mép dưới
+            } else if (distFromBottom === 1) {
+                score += 30; // MGMD cách mép dưới 1 dòng (ví dụ có dòng 13 Buttons)
+            } else if (distFromBottom <= 2) {
+                score += 15;
+            }
+
             if (mgmdIdx < rows.length && (rows[mgmdIdx].isMgmd || (rows[mgmdIdx].text && rows[mgmdIdx].text.includes('MGMD')))) {
                 score += 25;
             }
@@ -198,6 +193,25 @@ const OcrParser = (() => {
                     };
                 }
             }
+        };
+
+        // Quét từ đáy lên tìm mốc MGMD hoặc Denom
+        for (let mIdx = rows.length - 1; mIdx >= 0; mIdx--) {
+            const row = rows[mIdx];
+            const isRowMgmd = row.isMgmd || (row.text && row.text.includes('MGMD'));
+            if (isRowMgmd) {
+                evaluateAnchor(mIdx);
+            } else if (isDenomRow(row.text)) {
+                evaluateAnchor(mIdx + 1); // Denom nằm ngay trên MGMD 1 dòng
+            }
+        }
+
+        // Nếu ảnh chụp sát mép dưới mà model chưa nhận diện rõ chữ 'MGMD' hay '$0.01':
+        // Thử giả thuyết mặc định theo vị trí căn mép dưới của người dùng
+        if (bestScore < 40 && rows.length >= 3) {
+            evaluateAnchor(rows.length - 1);
+            if (rows.length >= 4) evaluateAnchor(rows.length - 2);
+            if (rows.length >= 2) evaluateAnchor(rows.length); // Denom là dòng cuối cùng
         }
 
         return bestCandidate;
