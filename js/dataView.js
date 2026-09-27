@@ -88,28 +88,63 @@ const DataView = (() => {
 
     /**
      * Hiển thị Modal xem ảnh ROI kích thước lớn (Lightbox)
+     * Hỗ trợ vuốt trái/phải (swipe) và phím bấm điều hướng theo thứ tự số máy tăng dần (nhỏ trái, lớn phải)
      */
-    function showImageModal(record) {
+    function showImageModal(initialRecord) {
         closeModals();
+
+        // Danh sách các máy có ảnh, sắp xếp từ nhỏ đến lớn (nhỏ trái, lớn phải)
+        const imageRecords = currentRows
+            .filter((r) => Boolean(r.image_base64 && r.image_base64.length > 50))
+            .sort((a, b) => {
+                const ma = Number(a.machine_no ?? a.machineNo ?? 0);
+                const mb = Number(b.machine_no ?? b.machineNo ?? 0);
+                return ma - mb;
+            });
+
+        if (imageRecords.length === 0) {
+            alert('Không tìm thấy ảnh ROI nào.');
+            return;
+        }
+
+        let currentIndex = imageRecords.findIndex((r) => r.id === initialRecord.id);
+        if (currentIndex === -1) currentIndex = 0;
 
         const overlay = document.createElement('div');
         overlay.id = 'dvModalOverlay';
         overlay.className = 'modal-overlay';
         overlay.innerHTML = `
-            <div class="modal-card" style="max-width: 500px;">
+            <div class="modal-card" style="max-width: 500px; padding: 16px 18px;">
                 <div class="modal-header">
-                    <h3>📷 Ảnh ROI - Máy #${record.machine_no ?? '-'}</h3>
+                    <div style="display: flex; align-items: baseline; gap: 8px;">
+                        <h3 id="dvLightboxTitle">📷 Ảnh ROI - Máy #${imageRecords[currentIndex].machine_no ?? '-'}</h3>
+                        <span id="dvLightboxIndex" style="font-size: 12px; color: #a1a1aa; font-weight: 500;">(${currentIndex + 1}/${imageRecords.length})</span>
+                    </div>
                     <button class="modal-close-btn" id="btnDvCloseImgModal">✕</button>
                 </div>
-                <div class="modal-body" style="align-items: center;">
-                    <img src="${record.image_base64}" style="width: 100%; max-height: 65vh; object-fit: contain; border-radius: 8px; border: 1px solid rgba(255,255,255,0.15);" alt="Ảnh ROI Máy #${record.machine_no}" />
-                    <div style="width: 100%; display: flex; justify-content: space-around; background: rgba(255,255,255,0.06); padding: 8px 12px; border-radius: 8px; font-size: 13px;">
-                        <span>Máy: <strong>#${record.machine_no}</strong></span>
-                        <span>RTP1: <strong style="color: #4ade80;">${record.rtp1}%</strong></span>
-                        <span>RTP2: <strong style="color: #4ade80;">${record.rtp2}%</strong></span>
+
+                <div class="modal-body" style="align-items: center; position: relative;">
+                    <!-- Khung chứa ảnh và 2 nút mũi tên -->
+                    <div id="dvImageCarouselContainer" class="roi-image-container">
+                        <button id="btnDvPrevImg" class="roi-nav-btn roi-nav-prev" title="Máy nhỏ hơn (trái)">‹</button>
+                        <img id="dvLightboxImg" src="${imageRecords[currentIndex].image_base64}" alt="Ảnh ROI" class="roi-lightbox-image" />
+                        <button id="btnDvNextImg" class="roi-nav-btn roi-nav-next" title="Máy lớn hơn (phải)">›</button>
+                    </div>
+
+                    <!-- Thanh thông số bóc tách -->
+                    <div id="dvLightboxInfoBar" style="width: 100%; display: flex; justify-content: space-around; background: rgba(255,255,255,0.06); padding: 8px 12px; border-radius: 8px; font-size: 13px;">
+                        <span>Máy: <strong id="dvLbMachine">#${imageRecords[currentIndex].machine_no}</strong></span>
+                        <span>RTP1: <strong id="dvLbRtp1" style="color: #4ade80;">${imageRecords[currentIndex].rtp1}%</strong></span>
+                        <span>RTP2: <strong id="dvLbRtp2" style="color: #4ade80;">${imageRecords[currentIndex].rtp2}%</strong></span>
+                    </div>
+
+                    <!-- Gợi ý vuốt -->
+                    <div style="font-size: 11px; color: #71717a; text-align: center; margin-top: 2px;">
+                        👈 Vuốt trái / phải để chuyển máy (nhỏ ➔ lớn) 👉
                     </div>
                 </div>
-                <div class="modal-footer" style="margin-top: 14px;">
+
+                <div class="modal-footer" style="margin-top: 12px;">
                     <button id="btnDvEditFromImg" class="btn btn-primary" style="height: 40px; font-size: 13px; padding: 0 16px;">✏️ Chỉnh sửa thông số này</button>
                     <button id="btnDvCloseImgModal2" class="btn btn-secondary" style="height: 40px; font-size: 13px; padding: 0 16px;">Đóng</button>
                 </div>
@@ -117,14 +152,134 @@ const DataView = (() => {
         `;
         document.body.appendChild(overlay);
 
-        const close = () => closeModals();
+        const imgEl = document.getElementById('dvLightboxImg');
+        const titleEl = document.getElementById('dvLightboxTitle');
+        const indexEl = document.getElementById('dvLightboxIndex');
+        const machEl = document.getElementById('dvLbMachine');
+        const r1El = document.getElementById('dvLbRtp1');
+        const r2El = document.getElementById('dvLbRtp2');
+        const prevBtn = document.getElementById('btnDvPrevImg');
+        const nextBtn = document.getElementById('btnDvNextImg');
+        const carouselBox = document.getElementById('dvImageCarouselContainer');
+
+        function updateView(direction = null) {
+            const rec = imageRecords[currentIndex];
+            titleEl.textContent = `📷 Ảnh ROI - Máy #${rec.machine_no ?? '-'}`;
+            indexEl.textContent = `(${currentIndex + 1}/${imageRecords.length})`;
+            machEl.textContent = `#${rec.machine_no}`;
+            r1El.textContent = `${rec.rtp1}%`;
+            r2El.textContent = `${rec.rtp2}%`;
+
+            prevBtn.disabled = (currentIndex === 0);
+            nextBtn.disabled = (currentIndex === imageRecords.length - 1);
+
+            // Hiệu ứng animation trượt:
+            // direction === 'left': sang máy lớn hơn (phải) -> hiệu ứng trượt từ phải vào
+            // direction === 'right': sang máy nhỏ hơn (trái) -> hiệu ứng trượt từ trái vào
+            imgEl.className = 'roi-lightbox-image';
+            if (direction === 'left') {
+                void imgEl.offsetWidth;
+                imgEl.classList.add('slide-in-right');
+            } else if (direction === 'right') {
+                void imgEl.offsetWidth;
+                imgEl.classList.add('slide-in-left');
+            }
+            imgEl.src = rec.image_base64;
+        }
+
+        function goToPrev() {
+            if (currentIndex > 0) {
+                currentIndex--;
+                updateView('right'); // chuyển về máy nhỏ hơn bên trái
+            }
+        }
+
+        function goToNext() {
+            if (currentIndex < imageRecords.length - 1) {
+                currentIndex++;
+                updateView('left'); // chuyển sang máy lớn hơn bên phải
+            }
+        }
+
+        // Nút mũi tên
+        prevBtn.onclick = (e) => { e.stopPropagation(); goToPrev(); };
+        nextBtn.onclick = (e) => { e.stopPropagation(); goToNext(); };
+
+        // Xử lý cử chỉ vuốt (Touch Swipe)
+        let touchStartX = 0;
+        let touchStartY = 0;
+        let touchStartTime = 0;
+
+        carouselBox.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 1) {
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
+                touchStartTime = Date.now();
+            }
+        }, { passive: true });
+
+        carouselBox.addEventListener('touchend', (e) => {
+            if (e.changedTouches.length === 1) {
+                const diffX = e.changedTouches[0].clientX - touchStartX;
+                const diffY = e.changedTouches[0].clientY - touchStartY;
+                const elapsed = Date.now() - touchStartTime;
+
+                // Vuốt ngang hợp lệ: khoảng cách > 35px, góc ngang lớn hơn góc dọc và thời gian < 700ms
+                if (Math.abs(diffX) > 35 && Math.abs(diffX) > Math.abs(diffY) * 1.15 && elapsed < 700) {
+                    if (diffX < 0) {
+                        // Kéo ngón tay sang trái -> Xem máy lớn hơn ở bên phải
+                        goToNext();
+                    } else {
+                        // Kéo ngón tay sang phải -> Xem máy nhỏ hơn ở bên trái
+                        goToPrev();
+                    }
+                }
+            }
+        }, { passive: true });
+
+        // Hỗ trợ kéo chuột trên máy tính (Mouse Drag)
+        let isMouseDown = false;
+        let mouseStartX = 0;
+        carouselBox.addEventListener('mousedown', (e) => {
+            isMouseDown = true;
+            mouseStartX = e.clientX;
+        });
+        const onMouseUp = (e) => {
+            if (!isMouseDown) return;
+            isMouseDown = false;
+            const diffX = e.clientX - mouseStartX;
+            if (Math.abs(diffX) > 40) {
+                if (diffX < 0) goToNext();
+                else goToPrev();
+            }
+        };
+        window.addEventListener('mouseup', onMouseUp);
+
+        // Hỗ trợ phím mũi tên bàn phím
+        const onKeyDown = (e) => {
+            if (e.key === 'ArrowLeft') goToPrev();
+            else if (e.key === 'ArrowRight') goToNext();
+            else if (e.key === 'Escape') close();
+        };
+        window.addEventListener('keydown', onKeyDown);
+
+        const close = () => {
+            window.removeEventListener('mouseup', onMouseUp);
+            window.removeEventListener('keydown', onKeyDown);
+            closeModals();
+        };
+
         overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
         document.getElementById('btnDvCloseImgModal').onclick = close;
         document.getElementById('btnDvCloseImgModal2').onclick = close;
         document.getElementById('btnDvEditFromImg').onclick = () => {
-            closeModals();
-            showEditModal(record);
+            const currentRec = imageRecords[currentIndex];
+            close();
+            showEditModal(currentRec);
         };
+
+        // Khởi tạo trạng thái ban đầu
+        updateView();
     }
 
     /**
