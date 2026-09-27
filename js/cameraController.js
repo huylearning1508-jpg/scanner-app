@@ -19,18 +19,27 @@ const CameraController = (() => {
         captureCanvas = hiddenCanvasElement;
     }
 
-    /** Thử play() vài lần liên tiếp (cách nhau ngắn) trước khi bỏ cuộc — chống lỗi thoáng qua. */
-    async function playWithRetry(maxAttempts = 3) {
+    /** Thử play() và chờ cho đến khi video thực sự render frame (videoWidth > 0 và !paused). */
+    async function playWithRetry(maxAttempts = 12) {
         for (let i = 0; i < maxAttempts; i++) {
             try {
                 await videoEl.play();
-                return;
             } catch (e) {
-                logDiag(`play() thử ${i + 1}/${maxAttempts} lỗi: ${e.message}`);
-                if (i < maxAttempts - 1) await new Promise((r) => setTimeout(r, 300));
+                logDiag(`play() thử ${i + 1}/${maxAttempts} chờ: ${e.message}`);
             }
+
+            if (!videoEl.paused && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+                logDiag(`Video đã phát ổn định: ${videoEl.videoWidth}x${videoEl.videoHeight}`);
+                return;
+            }
+            if (i < maxAttempts - 1) await new Promise((r) => setTimeout(r, 150));
         }
-        throw new Error('play() thất bại sau ' + maxAttempts + ' lần thử');
+
+        if (!videoEl.paused) {
+            logDiag(`Video đã play nhưng chưa có dimensions (${videoEl.videoWidth}x${videoEl.videoHeight})`);
+            return;
+        }
+        throw new Error('Không thể tự động phát video camera (trình duyệt có thể cần tương tác màn hình)');
     }
 
     const diagLog = [];
@@ -61,41 +70,68 @@ const CameraController = (() => {
                 video: { facingMode: { ideal: 'environment' } },
                 audio: false
             });
+            logDiag('getUserMedia camera sau thành công');
         } catch (e1) {
             logDiag('Không mở được camera sau, fallback sang camera mặc định: ' + e1.message);
-            stream = await navigator.mediaDevices.getUserMedia({
-                video: true,
-                audio: false
-            });
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: false
+                });
+                logDiag('getUserMedia fallback thành công');
+            } catch (e2) {
+                logDiag('getUserMedia hoàn toàn thất bại: ' + e2.message);
+                throw e2;
+            }
         }
         logDiag('getUserMedia thành công, stream.active=' + stream.active);
 
         videoEl.muted = true;
+        videoEl.defaultMuted = true;
         videoEl.playsInline = true;
         videoEl.setAttribute('playsinline', '');
         videoEl.setAttribute('webkit-playsinline', '');
         videoEl.setAttribute('autoplay', '');
         videoEl.setAttribute('muted', '');
 
-        videoEl.addEventListener('loadedmetadata', () => logDiag(`loadedmetadata (${videoEl.videoWidth}x${videoEl.videoHeight})`));
+        videoEl.addEventListener('loadedmetadata', () => {
+            logDiag(`loadedmetadata (${videoEl.videoWidth}x${videoEl.videoHeight})`);
+            if (videoEl.paused) videoEl.play().catch(() => {});
+        });
         videoEl.addEventListener('playing', () => logDiag('playing event'));
         videoEl.addEventListener('error', (e) => logDiag('video error: ' + (videoEl.error ? videoEl.error.message : e)));
+        videoEl.addEventListener('stalled', () => logDiag('stalled event'));
+        videoEl.addEventListener('suspend', () => logDiag('suspend event'));
 
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden && videoEl.srcObject && videoEl.paused) {
+                logDiag('tab quay lại foreground, thử play() lại');
                 videoEl.play().catch(() => {});
             }
         });
         window.addEventListener('pageshow', () => {
             if (videoEl.srcObject && videoEl.paused) {
+                logDiag('pageshow, thử play() lại');
                 videoEl.play().catch(() => {});
             }
         });
 
+        // Bổ sung listener chạm vào bất cứ đâu trên màn hình để mở khóa autoplay nếu trình duyệt chặn
+        const unlockOnUserGesture = () => {
+            if (videoEl && videoEl.srcObject && videoEl.paused) {
+                logDiag('Chạm màn hình -> mở khoá play()');
+                videoEl.play().catch((e) => logDiag('User gesture play error: ' + e.message));
+            }
+        };
+        window.addEventListener('touchstart', unlockOnUserGesture, { passive: true });
+        window.addEventListener('click', unlockOnUserGesture, { passive: true });
+
         videoEl.srcObject = stream;
-        const playPromise = videoEl.play();
-        if (playPromise && typeof playPromise.catch === 'function') {
-            playPromise.catch((e) => logDiag('play() chờ tương tác: ' + e.message));
+        try {
+            await playWithRetry();
+            logDiag('play() resolved thành công');
+        } catch (e) {
+            logDiag('playWithRetry thông báo: ' + e.message);
         }
 
         track = stream.getVideoTracks()[0];
@@ -178,7 +214,12 @@ const CameraController = (() => {
     }
 
     function getVideoElement() {
-        return (videoEl && videoEl.readyState >= 2) ? videoEl : null;
+        return (videoEl && videoEl.readyState >= 2 && videoEl.videoWidth > 0) ? videoEl : null;
+    }
+
+    function showDiagModal() {
+        const diag = getDiagnostics();
+        alert('--- THÔNG TIN CHẨN ĐOÁN CAMERA ---\n\n' + diag);
     }
 
     return {
@@ -190,6 +231,7 @@ const CameraController = (() => {
         captureFrame,
         captureFreezeFrameDataUrl,
         getDiagnostics,
+        showDiagModal,
         release
     };
 })();

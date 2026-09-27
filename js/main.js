@@ -120,31 +120,26 @@ const ScanStep = Object.freeze({
 
         showScanTab();
         initFirebaseSync();
+
+        // 1. Mở Camera trước để hiển thị liveview ngay lập tức (< 300ms)
+        try {
+            tvScanStatus.textContent = 'Đang mở camera…';
+            await CameraController.startCamera();
+            permissionOverlay.hidden = true;
+            btnFlash.style.display = CameraController.isTorchSupported() ? '' : 'none';
+            tvScanStatus.textContent = 'Camera đã sẵn sàng. Đang nạp Model 4.0…';
+        } catch (e) {
+            console.error('Không thể mở camera', e);
+            permissionOverlay.hidden = false;
+            tvScanStatus.textContent = 'Lỗi camera: ' + e.message;
+            return;
+        }
+
         beginNewSession();
 
-        // 1. Mở Camera và Nạp Model AI SONG SONG (Parallel)
-        // Camera mở ngay lập tức (< 0.2s) để người dùng thấy video liveview ngay,
-        // không bị chặn chờ tải model AI 18MB
-        const cameraPromise = (async () => {
-            try {
-                tvScanStatus.textContent = 'Đang mở camera…';
-                await CameraController.startCamera();
-                permissionOverlay.hidden = true;
-                btnFlash.style.display = CameraController.isTorchSupported() ? '' : 'none';
-                tvScanStatus.textContent = 'Camera đã sẵn sàng. Đang nạp model…';
-                return true;
-            } catch (e) {
-                console.error('Không thể mở camera', e);
-                permissionOverlay.hidden = false;
-                tvScanStatus.textContent = 'Lỗi camera: ' + e.message;
-                return false;
-            }
-        })();
-
-        const modelPromise = initOcrEngineWithRetry();
-
-        const [camOk, modelOk] = await Promise.all([cameraPromise, modelPromise]);
-        if (camOk && modelOk) {
+        // 2. Nạp Model AI và bắt đầu quét
+        const ok = await initOcrEngineWithRetry();
+        if (ok) {
             await startScanningAfterEngineReady();
             updateStatusUi();
         }
