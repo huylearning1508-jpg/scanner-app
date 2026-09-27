@@ -132,7 +132,7 @@ const ImageProcessing = (() => {
      * @param {number} minRowHeight bỏ qua dải quá mỏng (nhiễu)
      * @returns {{y0:number, y1:number}[]} danh sách dải hàng theo thứ tự trên->dưới
      */
-    function segmentRows(binMat, minRowHeight = 8) {
+    function segmentRows(binMat, minRowHeight = 6) {
         const rows = binMat.rows, cols = binMat.cols;
         const data = binMat.data;
         const rowSum = new Int32Array(rows);
@@ -142,10 +142,8 @@ const ImageProcessing = (() => {
             for (let x = 0; x < cols; x++) sum += data[base + x] > 0 ? 1 : 0;
             rowSum[y] = sum;
         }
-        // Ngưỡng theo tỉ lệ chiều rộng (không dùng "1 pixel là tính có chữ")
-        // để chống nhiễu moiré/JPEG còn sót lại sau dedither — vài pixel lẻ
-        // trôi nổi không đủ để nối 2 dòng thật lại thành 1 khối.
-        const threshold = Math.max(2, Math.round(cols * 0.01));
+        // Ngưỡng 0.5% chiều rộng để nhận diện cả dòng chứa 1 chữ số duy nhất (Machine No: "3")
+        const threshold = Math.max(2, Math.round(cols * 0.005));
         const bands = [];
         let inBand = false, y0 = 0;
         for (let y = 0; y < rows; y++) {
@@ -158,15 +156,6 @@ const ImageProcessing = (() => {
         }
         if (inBand && rows - y0 >= minRowHeight) bands.push({ y0, y1: rows });
 
-        // Vệt loá/phản quang trên màn hình máy có thể nối liền nhiều dòng
-        // thật thành 1 khối cao bất thường (quan sát thực tế: 1 khối 777px
-        // gộp 8 dòng số liệu, làm hỏng hoàn toàn bước tách ký tự phía sau).
-        // Không dựa vào "trung vị các band khác" để biết đâu là bất thường
-        // (không đáng tin — bản thân các band header cũng cao thấp lộn xộn).
-        // Thay vào đó: quét MỌI band tìm valley cục bộ (thấp hơn hẳn mức
-        // "đỉnh điển hình" ngay trong chính band đó) để tách tiếp — band nào
-        // vốn đã sạch 1 dòng thì không có valley nào đạt ngưỡng, tự nhiên
-        // giữ nguyên không bị tách.
         const final = [];
         for (const band of bands) final.push(...splitByLocalMinima(rowSum, band, minRowHeight));
         return final;
@@ -204,9 +193,6 @@ const ImageProcessing = (() => {
     /**
      * Tách ký tự trong 1 dải hàng bằng vertical projection profile, gom
      * thành token (cụm ký tự cách nhau khoảng trắng lớn = ranh giới token).
-     * @param {cv.Mat} binMat ảnh nhị phân toàn khung
-     * @param {{y0:number,y1:number}} band dải hàng cần tách
-     * @returns {{tokens: {x0:number,x1:number}[][]}} mảng token, mỗi token là mảng bbox ký tự {x0,x1} (dùng chung y0,y1 của band)
      */
     function segmentCharsIntoTokens(binMat, band, gapForTokenBreak = 10) {
         const cols = binMat.cols;
@@ -219,8 +205,6 @@ const ImageProcessing = (() => {
             }
             colSum[x] = sum;
         }
-        // Tìm các dải cột có chữ (ký tự), rồi gom theo khoảng cách. Cùng lý do
-        // chống nhiễu như segmentRows — không dùng "1 pixel là tính có chữ".
         const bandHeight = band.y1 - band.y0;
         const colThreshold = Math.max(2, Math.round(bandHeight * 0.05));
         const charBoxes = [];
@@ -235,7 +219,6 @@ const ImageProcessing = (() => {
         }
         if (inChar) charBoxes.push({ x0, x1: cols });
 
-        // Gom charBoxes thành token theo khoảng cách giữa 2 box liên tiếp.
         const tokens = [];
         let current = [];
         for (let i = 0; i < charBoxes.length; i++) {
@@ -258,11 +241,7 @@ const ImageProcessing = (() => {
     }
 
     /**
-     * Tính bounding box THẬT (theo pixel có chữ) của 1 ký tự bên trong dải
-     * cột [x0,x1) — không dùng nguyên chiều cao của band, vì band có thể
-     * cao hơn ký tự thật khá nhiều (dư khoảng trắng trên/dưới, hoặc do
-     * bước tách dòng chưa hoàn hảo) — nếu cứ dùng cả chiều cao band, ảnh
-     * ký tự bị kéo méo tỉ lệ nghiêm trọng trước khi đưa vào model.
+     * Tính bounding box THẬT (theo pixel có chữ) của 1 ký tự bên trong dải cột [x0,x1)
      */
     function tightVerticalBounds(binMat, band, box) {
         const cols = binMat.cols;
@@ -284,19 +263,44 @@ const ImageProcessing = (() => {
     }
 
     /**
-     * Crop 1 ký tự để đưa vào model mới (`digit_model.onnx`, 32x32).
-     *
-     * ĐÃ XÁC NHẬN bằng cách đối chiếu trực tiếp với ảnh training thật (crop
-     * theo manifest.csv, so khớp pixel với ảnh 32x32 đã lưu — xem
-     * debug-tool/reverse_engineer_crop.js): model này train trên ẢNH XÁM
-     * GỐC (KHÔNG threshold/nhị phân hoá), pad về hình vuông bằng NỀN TRẮNG
-     * (không phải đen), resize 32x32, chuẩn hoá (v/255 - 0.5) / 0.5, KHÔNG
-     * đảo ngược. Test trên 180 ảnh mẫu thật (15 ảnh/lớp) cho 100% đúng với
-     * đúng công thức này.
-     *
-     * Vẫn cần `binMat` (đã threshold) để tìm ĐÚNG vị trí ký tự (tightVerticalBounds)
-     * — việc "tìm chữ ở đâu" model không tự làm được — nhưng ảnh CUỐI CÙNG
-     * đưa vào model lấy từ `grayMat` (ảnh xám gốc), không phải binMat.
+     * Chuẩn hoá crop về kích thước 32x128 cho Model 4.0:
+     * - Giữ nguyên tỉ lệ (aspect ratio).
+     * - Đặt ở giữa khung canvas 32x128 có viền trắng 255.
+     * - Chuẩn hoá (v / 127.5) - 1.0 (dải [-1.0, 1.0]).
+     */
+    function padAndNormalizeForModel4(cropMat) {
+        const targetH = 32;
+        const targetW = 128;
+        const h = cropMat.rows;
+        const w = cropMat.cols;
+
+        const scale = Math.min(targetH / Math.max(1, h), targetW / Math.max(1, w));
+        const newW = Math.max(1, Math.round(w * scale));
+        const newH = Math.max(1, Math.round(h * scale));
+
+        const resized = new cv.Mat();
+        cv.resize(cropMat, resized, new cv.Size(newW, newH), 0, 0, scale < 1 ? cv.INTER_AREA : cv.INTER_CUBIC);
+
+        const canvasMat = new cv.Mat(targetH, targetW, cv.CV_8UC1, new cv.Scalar(255));
+        const xOff = Math.floor((targetW - newW) / 2);
+        const yOff = Math.floor((targetH - newH) / 2);
+        const roiTarget = canvasMat.roi(new cv.Rect(xOff, yOff, newW, newH));
+        resized.copyTo(roiTarget);
+        roiTarget.delete();
+
+        const out = new Float32Array(targetH * targetW);
+        const data = canvasMat.data;
+        for (let i = 0; i < targetH * targetW; i++) {
+            out[i] = (data[i] / 127.5) - 1.0;
+        }
+
+        resized.delete();
+        canvasMat.delete();
+        return out;
+    }
+
+    /**
+     * Crop 1 ký tự đơn lẻ đưa vào Model 4.0 (32x128)
      */
     function cropCharForClassifier(grayMat, binMat, band, box) {
         const tightY = tightVerticalBounds(binMat, band, box);
@@ -307,23 +311,26 @@ const ImageProcessing = (() => {
 
         const rect = new cv.Rect(x, y, w, h);
         const charMat = grayMat.roi(rect);
+        const out = padAndNormalizeForModel4(charMat);
+        charMat.delete();
+        return out;
+    }
 
-        const side = Math.max(charMat.rows, charMat.cols);
-        const square = new cv.Mat(side, side, cv.CV_8UC1, new cv.Scalar(255)); // nền trắng, khớp ảnh training
-        const xOff = Math.floor((side - charMat.cols) / 2);
-        const yOff = Math.floor((side - charMat.rows) / 2);
-        const roiTarget = square.roi(new cv.Rect(xOff, yOff, charMat.cols, charMat.rows));
-        charMat.copyTo(roiTarget);
-        roiTarget.delete();
+    /**
+     * Crop 1 cụm ký tự (cluster/token, ví dụ cụm "MGMD") đưa vào Model 4.0
+     */
+    function cropClusterForClassifier(grayMat, binMat, band, x0, x1) {
+        const box = { x0, x1 };
+        const tightY = tightVerticalBounds(binMat, band, box);
+        const x = Math.max(0, Math.min(x0, grayMat.cols - 1));
+        const y = Math.max(0, Math.min(tightY.y0, grayMat.rows - 1));
+        const w = Math.max(1, Math.min(x1 - x0, grayMat.cols - x));
+        const h = Math.max(1, Math.min(tightY.y1 - tightY.y0, grayMat.rows - y));
 
-        const resized = new cv.Mat();
-        cv.resize(square, resized, new cv.Size(32, 32), 0, 0, cv.INTER_AREA);
-
-        const out = new Float32Array(32 * 32);
-        const data = resized.data;
-        for (let i = 0; i < 1024; i++) out[i] = (data[i] / 255 - 0.5) / 0.5;
-
-        charMat.delete(); square.delete(); resized.delete();
+        const rect = new cv.Rect(x, y, w, h);
+        const clusterMat = grayMat.roi(rect);
+        const out = padAndNormalizeForModel4(clusterMat);
+        clusterMat.delete();
         return out;
     }
 
@@ -336,5 +343,7 @@ const ImageProcessing = (() => {
         segmentCharsIntoTokens,
         tightVerticalBounds,
         cropCharForClassifier,
+        cropClusterForClassifier,
     };
 })();
+

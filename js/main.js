@@ -1,14 +1,14 @@
 /**
  * main.js
  * -----------------------------------------------------------------------
- * Điều phối máy trạng thái quét 2 bước/máy:
- * Hỗ trợ 2 chế độ quét độc lập để so sánh & debug:
- *   1. Chế độ YOLO AI (Tab 1): Sử dụng YOLO11n (roi_detect.onnx) để tự động
- *      phát hiện vị trí các ô (machine_no, rtp1, rtp2, anchor_denom, datetime),
- *      vẽ bounding box trực quan và cắt riêng từng ô đưa vào DigitClassifier.
- *   2. Chế độ Cổ điển (Tab 2): Giữ nguyên thuật toán lọc hình thái học C++,
- *      tách dòng VPP và neo ký tự "$" theo khung ngắm cố định.
- *   3. Tab Dữ liệu (Tab 3): Bảng kiểm toán realtime từ Firebase Realtime DB.
+ * Điều phối máy trạng thái quét 2 bước/máy với Model 4.0 và logic Anchor MGMD:
+ *   - Mốc chính = dòng chữ MGMD
+ *   - Trên đó 1 dòng = Denom ($0.01)
+ *   - Trên đó 2 dòng = Machine Number (ví dụ: 3)
+ *   - Trên đó 3 dòng = RTP 2 (ví dụ: 93.56%)
+ *   - Trên đó 4 dòng = RTP 1 (ví dụ: 93.966%)
+ *
+ * Tab: Quét (Camera Liveview + Guide Band) & Dữ liệu (Bảng kiểm toán Realtime).
  * -----------------------------------------------------------------------
  */
 
@@ -24,8 +24,7 @@ const ScanStep = Object.freeze({
     const $ = (id) => document.getElementById(id);
 
     // ---- Tabs ----
-    const tabBtnYolo = $('tabBtnYolo');
-    const tabBtnClassic = $('tabBtnClassic');
+    const tabBtnScan = $('tabBtnScan');
     const tabBtnData = $('tabBtnData');
     const dataTabView = $('dataTabView');
     const scanTabView = $('scanTabView');
@@ -36,8 +35,6 @@ const ScanStep = Object.freeze({
     const chkLiveFilter = $('chkLiveFilter');
     const liveFilterToggle = $('liveFilterToggle');
     const guideOverlay = $('guideOverlay');
-    const yoloCanvasOverlay = $('yoloCanvasOverlay');
-    const yoloStatsBadge = $('yoloStatsBadge');
 
     const captureCanvas = $('captureCanvas');
     const frozenImg = $('frozenFrameImage');
@@ -73,11 +70,6 @@ const ScanStep = Object.freeze({
     let scannedCount = 0;
     let activeMachineNo = '';
     let engineStarted = false;
-    let activeMode = 'yolo'; // 'yolo' | 'classic' | 'data'
-
-    let yoloLoopRunning = false;
-    let yoloLoopHandle = null;
-    let isProcessingYoloFrame = false;
 
     function pad2(n) { return String(n).padStart(2, '0'); }
     function nowScanTime() {
@@ -87,61 +79,32 @@ const ScanStep = Object.freeze({
 
     // ============================== TABS ==============================
 
-    function showYoloTab() {
-        activeMode = 'yolo';
-        tabBtnYolo.classList.add('active');
-        tabBtnClassic.classList.remove('active');
-        tabBtnData.classList.remove('active');
-        scanTabView.hidden = false;
-        dataTabView.hidden = true;
-        DataView.stop();
-
-        if (guideOverlay) guideOverlay.hidden = true;
-        if (yoloCanvasOverlay) yoloCanvasOverlay.hidden = false;
-        if (yoloStatsBadge) yoloStatsBadge.hidden = false;
-        if (liveFilterToggle) liveFilterToggle.hidden = true;
-        if (liveFilterCanvas) liveFilterCanvas.hidden = true;
-
-        OcrEngine.setPaused(true);
-        startYoloLoop();
-        updateStatusUi();
-    }
-
-    function showClassicTab() {
-        activeMode = 'classic';
-        tabBtnClassic.classList.add('active');
-        tabBtnYolo.classList.remove('active');
+    function showScanTab() {
+        tabBtnScan.classList.add('active');
         tabBtnData.classList.remove('active');
         scanTabView.hidden = false;
         dataTabView.hidden = true;
         DataView.stop();
 
         if (guideOverlay) guideOverlay.hidden = false;
-        if (yoloCanvasOverlay) yoloCanvasOverlay.hidden = true;
-        if (yoloStatsBadge) yoloStatsBadge.hidden = true;
         if (liveFilterToggle) liveFilterToggle.hidden = false;
         if (liveFilterCanvas) liveFilterCanvas.hidden = !chkLiveFilter.checked;
 
-        stopYoloLoop();
         OcrEngine.setPaused(currentStep === ScanStep.STEP1_FROZEN || currentStep === ScanStep.STEP2_FROZEN || currentStep === ScanStep.SESSION_ENDED);
         updateStatusUi();
     }
 
     function showDataTab() {
-        activeMode = 'data';
         tabBtnData.classList.add('active');
-        tabBtnYolo.classList.remove('active');
-        tabBtnClassic.classList.remove('active');
+        tabBtnScan.classList.remove('active');
         dataTabView.hidden = false;
         scanTabView.hidden = true;
 
-        stopYoloLoop();
         OcrEngine.setPaused(true);
         DataView.start(dataTabView);
     }
 
-    tabBtnYolo.addEventListener('click', showYoloTab);
-    tabBtnClassic.addEventListener('click', showClassicTab);
+    tabBtnScan.addEventListener('click', showScanTab);
     tabBtnData.addEventListener('click', showDataTab);
 
     // ============================== KHỞI TẠO ==============================
@@ -166,8 +129,7 @@ const ScanStep = Object.freeze({
 
         btnFlash.style.display = CameraController.isTorchSupported() ? '' : 'none';
 
-        // Hiển thị camera ngay lập tức cho người dùng thấy hình ảnh live
-        showYoloTab();
+        showScanTab();
         initFirebaseSync();
         beginNewSession();
 
@@ -178,43 +140,28 @@ const ScanStep = Object.freeze({
     async function startScanningAfterEngineReady() {
         engineStarted = true;
 
-        // Vòng lặp quét chế độ Cổ điển
+        // Bắt đầu vòng lặp quét nhận diện
         OcrEngine.startLoop(
             () => CameraController.getVideoElement() || CameraController.captureFrame(),
             () => (currentStep === ScanStep.STEP1_SCANNING ? 'step1' : 'step2'),
-            (rows, step) => {
-                if (activeMode === 'classic') handleOcrResult(rows, step);
-            },
-            (previewCanvas) => {
-                if (activeMode === 'classic') drawLiveFilter(previewCanvas);
-            }
+            (rows, step) => handleOcrResult(rows, step),
+            (previewCanvas) => drawLiveFilter(previewCanvas)
         );
-
-        if (activeMode === 'yolo') {
-            startYoloLoop();
-        }
     }
 
-    /**
-     * Khởi tạo OcrEngine (OpenCV.js + model số 32x32) và YOLO detector song song với tiến trình %
-     */
     async function initOcrEngineWithRetry() {
         loadingOverlay.hidden = false;
         btnRetryLoad.hidden = true;
         loadingText.className = '';
-        loadingText.textContent = 'Đang tải model AI (lần đầu có thể mất vài giây)…';
+        loadingText.textContent = 'Đang nạp Model 4.0 (13 lớp: 0-9, $, %, MGMD)…';
         try {
-            const pOcr = OcrEngine.init();
-            const pYolo = YoloDetector.init('models/roi_detect.onnx', (pct) => {
-                loadingText.textContent = `Đang nạp YOLO AI: ${pct}%...`;
-            });
-            await Promise.all([pOcr, pYolo]);
+            await OcrEngine.init();
             loadingOverlay.hidden = true;
             return true;
         } catch (e) {
             console.error('Không thể khởi tạo bộ máy nhận diện', e);
             loadingText.className = 'error';
-            loadingText.textContent = 'Không thể khởi tạo bộ máy nhận diện: ' + e.message;
+            loadingText.textContent = 'Lỗi nạp Model 4.0: ' + e.message;
             btnRetryLoad.hidden = false;
             return false;
         }
@@ -231,186 +178,6 @@ const ScanStep = Object.freeze({
         OcrEngine.setLiveFilterEnabled(on);
         liveFilterCanvas.hidden = !on;
     });
-
-    // ============================== VÒNG LẶP YOLO AI ==============================
-
-    function startYoloLoop() {
-        if (yoloLoopRunning) return;
-        yoloLoopRunning = true;
-        scheduleNextYoloTick();
-    }
-
-    function stopYoloLoop() {
-        yoloLoopRunning = false;
-        if (yoloLoopHandle) {
-            clearTimeout(yoloLoopHandle);
-            yoloLoopHandle = null;
-        }
-    }
-
-    function scheduleNextYoloTick() {
-        if (!yoloLoopRunning || activeMode !== 'yolo') return;
-        yoloLoopHandle = setTimeout(runYoloTick, 35);
-    }
-
-    // Các canvas tái sử dụng — loại bỏ 100% việc tạo mới DOM canvas và tránh Garbage Collection giật lag
-    const cropMachCanvas = document.createElement('canvas');
-    const cropRtp1Canvas = document.createElement('canvas');
-    const cropRtp2Canvas = document.createElement('canvas');
-    const cropDateCanvas = document.createElement('canvas');
-
-    function copyCropToCanvas(srcVideo, bbox, targetCanvas) {
-        const [x1, y1, x2, y2] = bbox;
-        const w = Math.max(1, x2 - x1);
-        const h = Math.max(1, y2 - y1);
-        targetCanvas.width = w;
-        targetCanvas.height = h;
-        const ctx = targetCanvas.getContext('2d', { willReadFrequently: true });
-        ctx.drawImage(srcVideo, x1, y1, w, h, 0, 0, w, h);
-        return targetCanvas;
-    }
-
-    async function runYoloTick() {
-        if (!yoloLoopRunning || activeMode !== 'yolo') return;
-
-        if (currentStep === ScanStep.STEP1_FROZEN || currentStep === ScanStep.STEP2_FROZEN || currentStep === ScanStep.SESSION_ENDED) {
-            scheduleNextYoloTick();
-            return;
-        }
-
-        const video = CameraController.getVideoElement();
-        if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
-            scheduleNextYoloTick();
-            return;
-        }
-
-        if (isProcessingYoloFrame) {
-            scheduleNextYoloTick();
-            return;
-        }
-
-        isProcessingYoloFrame = true;
-        try {
-            // Định vị toạ độ các ô bằng YOLO (không tốn tài nguyên vẽ overlay)
-            const { boxes, durationMs } = await YoloDetector.detect(video, 0.35);
-
-            if (currentStep === ScanStep.STEP1_SCANNING) {
-                await processYoloStep1(boxes, video, durationMs);
-            } else if (currentStep === ScanStep.STEP2_SCANNING) {
-                await processYoloStep2(boxes, video, durationMs);
-            }
-        } catch (err) {
-            console.warn('[YOLO Tick] Lỗi xử lý khung hình:', err);
-        } finally {
-            isProcessingYoloFrame = false;
-            scheduleNextYoloTick();
-        }
-    }
-
-    /**
-     * Bước 1 (YOLO): Cắt trực tiếp các ô đã định vị và nạp vào 1 lần chạy GPU duy nhất
-     */
-    async function processYoloStep1(boxes, video, yoloMs) {
-        const boxMach = boxes.find((b) => b.class === 'machine_no' && b.score >= 0.40);
-        const boxRtp1 = boxes.find((b) => b.class === 'rtp1' && b.score >= 0.40);
-        const boxRtp2 = boxes.find((b) => b.class === 'rtp2' && b.score >= 0.40);
-
-        if (!boxMach || (!boxRtp1 && !boxRtp2)) {
-            if (yoloStatsBadge) {
-                yoloStatsBadge.textContent = `⚡ YOLO: ${yoloMs}ms | Đang tìm vị trí ô...`;
-            }
-            return;
-        }
-
-        // Cắt ảnh nhanh vào các canvas tái sử dụng
-        copyCropToCanvas(video, boxMach.bbox, cropMachCanvas);
-        if (boxRtp1) copyCropToCanvas(video, boxRtp1.bbox, cropRtp1Canvas);
-        if (boxRtp2) copyCropToCanvas(video, boxRtp2.bbox, cropRtp2Canvas);
-
-        const ocrStart = performance.now();
-        // 1 LẦN GỌI GPU WEBGEL BATCH CHO TOÀN BỘ CÁC Ô!
-        const [resMach, resRtp1, resRtp2] = await OcrEngine.readMultipleCrops([
-            { canvas: cropMachCanvas, isNumericOnly: true },
-            { canvas: boxRtp1 ? cropRtp1Canvas : null, isNumericOnly: false },
-            { canvas: boxRtp2 ? cropRtp2Canvas : null, isNumericOnly: false }
-        ]);
-        const ocrMs = Math.round(performance.now() - ocrStart);
-
-        if (yoloStatsBadge) {
-            yoloStatsBadge.textContent = `⚡ Định vị: ${yoloMs}ms | Đọc: ${ocrMs}ms (Siêu tốc)`;
-        }
-
-        // Bóc tách Machine Number
-        const machDigits = resMach ? resMach.text.replace(/[^0-9]/g, '') : '';
-        if (!machDigits) return;
-        const machNo = Number(machDigits);
-        if (Number.isNaN(machNo) || machNo < OcrParser.MACHINE_NO_MIN || machNo > OcrParser.MACHINE_NO_MAX) return;
-
-        // Bóc tách RTP1
-        let rtp1Val = null;
-        let rtp1Auto = false;
-        if (boxRtp1 && resRtp1 && resRtp1.text) {
-            const r1Digits = resRtp1.text.replace(/[^0-9]/g, '');
-            if (resRtp1.text.includes('.')) {
-                const m = resRtp1.text.match(/[0-9]+\.[0-9]+/);
-                if (m) rtp1Val = Number(m[0]);
-            } else if (r1Digits.length > 2) {
-                const fixed = OcrParser.fixMissingDecimalForRtp(r1Digits);
-                rtp1Val = fixed.value;
-                rtp1Auto = fixed.corrected;
-            }
-        }
-
-        // Bóc tách RTP2
-        let rtp2Val = null;
-        let rtp2Auto = false;
-        if (boxRtp2 && resRtp2 && resRtp2.text) {
-            const r2Digits = resRtp2.text.replace(/[^0-9]/g, '');
-            if (resRtp2.text.includes('.')) {
-                const m = resRtp2.text.match(/[0-9]+\.[0-9]+/);
-                if (m) rtp2Val = Number(m[0]);
-            } else if (r2Digits.length > 2) {
-                const fixed = OcrParser.fixMissingDecimalForRtp(r2Digits);
-                rtp2Val = fixed.value;
-                rtp2Auto = fixed.corrected;
-            }
-        }
-
-        const validRtp1 = rtp1Val !== null && rtp1Val >= OcrParser.RTP_MIN && rtp1Val <= OcrParser.RTP_MAX;
-        const validRtp2 = rtp2Val !== null && rtp2Val >= OcrParser.RTP_MIN && rtp2Val <= OcrParser.RTP_MAX;
-
-        if (validRtp1 && validRtp2) {
-            onStep1Captured({
-                machineNo: machNo,
-                rtp1: rtp1Val,
-                rtp2: rtp2Val,
-                autoCorrected: { rtp1: rtp1Auto, rtp2: rtp2Auto },
-                allValid: true
-            });
-        }
-    }
-
-    /**
-     * Bước 2 (YOLO): Đọc ngày Clear RAM từ ô datetime nếu có
-     */
-    async function processYoloStep2(boxes, video, yoloMs) {
-        const boxDate = boxes.find((b) => b.class === 'datetime' && b.score >= 0.35);
-        if (!boxDate) return;
-
-        copyCropToCanvas(video, boxDate.bbox, cropDateCanvas);
-        const rows = await OcrEngine.processFrame(cropDateCanvas, { tokenizeRows: true });
-        if (rows && rows.length > 0) {
-            for (const row of rows) {
-                const result = OcrParser.parseStep2(row.tokens);
-                if (result) {
-                    onStep2Captured(result);
-                    break;
-                }
-            }
-        }
-    }
-
-
 
     // ============================== ĐỒNG BỘ FIREBASE ==============================
 
@@ -459,14 +226,14 @@ const ScanStep = Object.freeze({
         return true;
     }
 
-    // ============================== XỬ LÝ KẾT QUẢ NHẬN DIỆN (CHẾ ĐỘ CỔ ĐIỂN) ==============================
+    // ============================== XỬ LÝ KẾT QUẢ NHẬN DIỆN ==============================
 
     const DEBUG_LOG_ROWS = true;
 
     function logRecognizedRows(label, rows) {
         if (!DEBUG_LOG_ROWS) return;
-        if (!rows || rows.length === 0) { console.log(`[OCR ${label}] (không tách được dòng nào)`); return; }
-        console.log(`[OCR ${label}]`, rows.map((r) => `"${r.text}" (${(r.meanConfidence * 100).toFixed(0)}%)`));
+        const summary = rows.map((r, i) => `#${i}${r.isMgmd ? ' [MGMD]' : ''}: "${r.text}" (${Math.round(r.meanConfidence * 100)}%)`).join(' | ');
+        console.log(`[OCR ${label}] ${summary}`);
     }
 
     function handleOcrResult(rows, step) {
@@ -510,30 +277,6 @@ const ScanStep = Object.freeze({
         const frame = CameraController.captureFrame();
         if (!frame) return;
 
-        if (activeMode === 'yolo') {
-            try {
-                const { boxes } = await YoloDetector.detect(frame, 0.35);
-                if (currentStep === ScanStep.STEP1_SCANNING) {
-                    await processYoloStep1(boxes, frame);
-                } else if (currentStep === ScanStep.STEP2_SCANNING) {
-                    await processYoloStep2(boxes, frame);
-                }
-            } catch (e) {
-                console.error('Lỗi nhận diện YOLO khi chụp tay:', e);
-            }
-            if (currentStep === ScanStep.STEP1_SCANNING) {
-                freezePreview();
-                currentStep = ScanStep.STEP1_FROZEN;
-                updateStatusUi();
-            } else if (currentStep === ScanStep.STEP2_SCANNING) {
-                freezePreview();
-                currentStep = ScanStep.STEP2_FROZEN;
-                updateStatusUi();
-            }
-            return;
-        }
-
-        // Chế độ Cổ điển
         if (currentStep === ScanStep.STEP1_SCANNING) {
             let result = null;
             try {
@@ -581,121 +324,149 @@ const ScanStep = Object.freeze({
         btnSavePhoto.hidden = false;
     }
 
-    function onSavePhotoClicked() {
-        if (!frozenImg.src) return;
-        const a = document.createElement('a');
-        a.href = frozenImg.src;
-        const stepLabel = currentStep === ScanStep.STEP2_FROZEN ? 'step2' : 'step1';
-        a.download = `debug_${stepLabel}_${Date.now()}.jpg`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-    }
-
     function unfreezePreview() {
         frozenImg.hidden = true;
-        frozenImg.removeAttribute('src');
+        frozenImg.src = '';
         frozenBorder.hidden = true;
         btnSavePhoto.hidden = true;
-        if (activeMode === 'classic') {
-            OcrEngine.setPaused(false);
-        }
+        OcrEngine.setPaused(false);
     }
 
-    // ============================== SỰ KIỆN CLICK ==============================
+    // ============================== THIẾT LẬP CÁC NÚT BẤM ==============================
 
     function setupClickListeners() {
-        btnGrantPermission.addEventListener('click', bootstrap);
-
-        btnFlash.addEventListener('click', async () => {
-            const on = await CameraController.toggleTorch();
-            btnFlash.style.opacity = on ? '1' : '0.55';
-        });
-
+        btnConfirm.addEventListener('click', onConfirmClicked);
+        btnRescan.addEventListener('click', onRescanClicked);
         btnManualCapture.addEventListener('click', onManualCaptureClicked);
-        btnCameraDiag.addEventListener('click', () => {
-            alert(CameraController.getDiagnostics());
-        });
         btnSavePhoto.addEventListener('click', onSavePhotoClicked);
+        btnEndSession.addEventListener('click', confirmEndSession);
+        btnShareCsv.addEventListener('click', onShareCsvClicked);
+        btnNewSession.addEventListener('click', beginNewSession);
+        btnFlash.addEventListener('click', () => CameraController.toggleTorch());
+        btnCameraDiag.addEventListener('click', () => CameraController.showDiagModal());
+        btnGrantPermission.addEventListener('click', bootstrap);
         btnRetryLoad.addEventListener('click', async () => {
             const ok = await initOcrEngineWithRetry();
             if (ok && !engineStarted) await startScanningAfterEngineReady();
         });
-        btnEndSession.addEventListener('click', confirmEndSession);
-        btnRescan.addEventListener('click', onRescanClicked);
-        btnConfirm.addEventListener('click', onConfirmClicked);
-        btnShareCsv.addEventListener('click', onShareCsvClicked);
-        btnNewSession.addEventListener('click', beginNewSession);
     }
 
     function onRescanClicked() {
         if (currentStep === ScanStep.STEP1_FROZEN) {
-            etMachineId.value = '';
-            etParamX.value = '';
-            etParamY.value = '';
-            currentStep = ScanStep.STEP1_SCANNING;
+            clearAllFields();
+            hideBadge();
             unfreezePreview();
+            currentStep = ScanStep.STEP1_SCANNING;
             updateStatusUi();
         } else if (currentStep === ScanStep.STEP2_FROZEN) {
             etDay.value = '';
             etYear.value = '';
-            currentStep = ScanStep.STEP2_SCANNING;
             unfreezePreview();
+            currentStep = ScanStep.STEP2_SCANNING;
             updateStatusUi();
         }
     }
 
-    function onConfirmClicked() {
-        if (currentStep === ScanStep.STEP1_FROZEN) confirmStep1();
-        else if (currentStep === ScanStep.STEP2_FROZEN) confirmStep2AndSave();
+    function onSavePhotoClicked() {
+        const url = frozenImg.src;
+        if (!url) return;
+        const a = document.createElement('a');
+        a.href = url;
+        const stepName = currentStep === ScanStep.STEP1_FROZEN ? 'step1' : 'step2';
+        a.download = `debug_${stepName}_mach${activeMachineNo || 'unknown'}_${Date.now()}.png`;
+        a.click();
     }
 
-    function confirmStep1() {
-        const machineNo = Number(etMachineId.value.trim());
-        const rtp1 = Number(etParamX.value.trim());
-        const rtp2 = Number(etParamY.value.trim());
+    // ============================== XÁC NHẬN BƯỚC 1 / BƯỚC 2 ==============================
 
-        if (!etMachineId.value.trim() || Number.isNaN(machineNo) || machineNo < OcrParser.MACHINE_NO_MIN || machineNo > OcrParser.MACHINE_NO_MAX) {
-            alert(`Machine No phải là số nguyên trong khoảng ${OcrParser.MACHINE_NO_MIN}-${OcrParser.MACHINE_NO_MAX}`);
-            return;
+    async function onConfirmClicked() {
+        if (currentStep === ScanStep.STEP1_FROZEN) {
+            handleConfirmStep1();
+        } else if (currentStep === ScanStep.STEP2_FROZEN) {
+            await handleConfirmStep2();
         }
-        if (Number.isNaN(rtp1) || rtp1 < OcrParser.RTP_MIN || rtp1 > OcrParser.RTP_MAX) {
-            alert(`RTP1 phải trong khoảng ${OcrParser.RTP_MIN}-${OcrParser.RTP_MAX}`);
-            return;
-        }
-        if (Number.isNaN(rtp2) || rtp2 < OcrParser.RTP_MIN || rtp2 > OcrParser.RTP_MAX) {
-            alert(`RTP2 phải trong khoảng ${OcrParser.RTP_MIN}-${OcrParser.RTP_MAX}`);
+    }
+
+    function handleConfirmStep1() {
+        const machStr = etMachineId.value.trim();
+        const r1Str = etParamX.value.trim();
+        const r2Str = etParamY.value.trim();
+
+        if (!machStr || !r1Str || !r2Str) {
+            alert('Vui lòng kiểm tra và điền đầy đủ Machine No, RTP1, RTP2!');
             return;
         }
 
-        activeMachineNo = machineNo;
-        showBadge(machineNo);
-        etDay.value = '';
-        etYear.value = '';
-        selMonth.selectedIndex = new Date().getMonth();
-        btnConfirm.textContent = `Xác nhận & Lưu máy #${machineNo}`;
+        const mach = Number(machStr);
+        const r1 = Number(r1Str);
+        const r2 = Number(r2Str);
+
+        if (Number.isNaN(mach) || mach < OcrParser.MACHINE_NO_MIN || mach > OcrParser.MACHINE_NO_MAX) {
+            alert(`Machine No phải là số nguyên hợp lệ trong khoảng [${OcrParser.MACHINE_NO_MIN} - ${OcrParser.MACHINE_NO_MAX}]!`);
+            return;
+        }
+
+        if (Number.isNaN(r1) || r1 < OcrParser.RTP_MIN || r1 > OcrParser.RTP_MAX) {
+            alert(`RTP1 (${r1}) nằm ngoài khoảng hợp lệ [${OcrParser.RTP_MIN} - ${OcrParser.RTP_MAX}]%!`);
+            return;
+        }
+
+        if (Number.isNaN(r2) || r2 < OcrParser.RTP_MIN || r2 > OcrParser.RTP_MAX) {
+            alert(`RTP2 (${r2}) nằm ngoài khoảng hợp lệ [${OcrParser.RTP_MIN} - ${OcrParser.RTP_MAX}]%!`);
+            return;
+        }
+
+        showBadge(mach);
+        btnConfirm.textContent = 'Xác nhận & Lưu máy ➔';
         currentStep = ScanStep.STEP2_SCANNING;
         unfreezePreview();
         updateStatusUi();
     }
 
-    async function confirmStep2AndSave() {
-        const day = Number(etDay.value.trim());
-        const month = Number(selMonth.value);
-        const year = Number(etYear.value.trim());
+    async function handleConfirmStep2() {
+        const dayStr = etDay.value.trim();
+        const monthStr = selMonth.value;
+        const yearStr = etYear.value.trim();
 
-        if (!day || day < 1 || day > 31 || !year || year < 2000) {
-            alert('Vui lòng nhập đầy đủ và đúng định dạng ngày Clear RAM');
+        if (!dayStr || !monthStr || !yearStr) {
+            alert('Vui lòng chọn hoặc điền đầy đủ ngày, tháng, năm Clear RAM!');
             return;
         }
 
+        const day = Number(dayStr);
+        const month = Number(monthStr);
+        const year = Number(yearStr);
+
+        if (Number.isNaN(day) || day < 1 || day > 31) {
+            alert('Ngày phải từ 1 đến 31!');
+            return;
+        }
+
+        const currentYear = new Date().getFullYear();
+        if (Number.isNaN(year) || year < 2000 || year > currentYear + 1) {
+            alert(`Năm phải từ 2000 đến ${currentYear + 1}!`);
+            return;
+        }
+
+        const ramClearDateStr = `${pad2(day)}/${pad2(month)}/${year}`;
+        const scanTimestamp = nowScanTime();
         const machineNo = Number(etMachineId.value.trim());
         const rtp1 = Number(etParamX.value.trim());
         const rtp2 = Number(etParamY.value.trim());
-        const ramClearDateStr = `${pad2(day)}/${pad2(month)}/${year}`;
 
-        const csvRecord = { machineNo, rtp1, rtp2, ramClearDateStr, scanTime: nowScanTime() };
+        const csvRecord = [
+            scanTimestamp,
+            machineNo,
+            rtp1,
+            rtp2,
+            0,
+            0,
+            ramClearDateStr,
+        ];
+
         const fieldReading = {
+            scan_time: scanTimestamp,
+            scanTime: scanTimestamp,
             machine_no: machineNo,
             machineNo: machineNo,
             rtp1: rtp1,
@@ -751,8 +522,7 @@ const ScanStep = Object.freeze({
     function endSession() {
         CsvManager.endSession();
         currentStep = ScanStep.SESSION_ENDED;
-        OcrEngine.setPaused(true);
-        stopYoloLoop();
+        OcrEngine.stopLoop();
         hideBadge();
         postSessionPanel.hidden = false;
         updateStatusUi();
@@ -807,23 +577,21 @@ const ScanStep = Object.freeze({
         const scanning = currentStep === ScanStep.STEP1_SCANNING || currentStep === ScanStep.STEP2_SCANNING;
         btnManualCapture.hidden = !scanning;
 
-        const modeLabel = activeMode === 'yolo' ? '[YOLO AI]' : '[Cổ điển]';
-
         switch (currentStep) {
             case ScanStep.STEP1_SCANNING:
-                tvScanStatus.textContent = `${modeLabel} Bước 1/2 — Đang quét thông số máy… (hoặc bấm Chụp tay)`;
+                tvScanStatus.textContent = 'Bước 1/2 — Đang quét thông số máy… (hoặc bấm Chụp tay)';
                 setActionButtonsEnabled(false);
                 break;
             case ScanStep.STEP1_FROZEN:
-                tvScanStatus.textContent = `${modeLabel} Đã bắt được thông số. Kiểm tra và bấm Tiếp tục.`;
+                tvScanStatus.textContent = 'Đã bắt được thông số. Kiểm tra và bấm Tiếp tục.';
                 setActionButtonsEnabled(true);
                 break;
             case ScanStep.STEP2_SCANNING:
-                tvScanStatus.textContent = `${modeLabel} Bước 2/2 — Đang quét ngày Clear RAM máy #${activeMachineNo}…`;
+                tvScanStatus.textContent = `Bước 2/2 — Đang quét ngày Clear RAM máy #${activeMachineNo}…`;
                 setActionButtonsEnabled(false);
                 break;
             case ScanStep.STEP2_FROZEN:
-                tvScanStatus.textContent = `${modeLabel} Đã bắt được ngày. Chọn tháng và bấm Xác nhận.`;
+                tvScanStatus.textContent = 'Đã bắt được ngày. Chọn tháng và bấm Xác nhận.';
                 setActionButtonsEnabled(true);
                 break;
             case ScanStep.SESSION_ENDED:
@@ -838,7 +606,6 @@ const ScanStep = Object.freeze({
     window.addEventListener('beforeunload', () => {
         CameraController.release();
         OcrEngine.stopLoop();
-        stopYoloLoop();
     });
 
     document.addEventListener('DOMContentLoaded', bootstrap);

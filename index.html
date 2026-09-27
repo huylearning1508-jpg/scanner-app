@@ -17,8 +17,7 @@
 <body>
 
     <nav id="tabBar">
-        <button id="tabBtnYolo" class="tab-btn active">⚡ Quét (YOLO)</button>
-        <button id="tabBtnClassic" class="tab-btn">🔍 Quét (Cổ điển)</button>
+        <button id="tabBtnScan" class="tab-btn active">📷 Quét</button>
         <button id="tabBtnData" class="tab-btn">📊 Dữ liệu</button>
     </nav>
 
@@ -39,13 +38,10 @@
             <div id="frozenBorder" hidden></div>
             <button id="btnSavePhoto" hidden>💾 Lưu ảnh (debug)</button>
 
-            <!-- Khung ngắm cố định (chế độ Cổ điển) -->
-            <svg id="guideOverlay" viewBox="0 0 100 100" preserveAspectRatio="none" hidden>
-                <rect id="guideRect" x="50" y="30" width="50" height="40" />
+            <!-- Khung ngắm định vị -->
+            <svg id="guideOverlay" viewBox="0 0 100 100" preserveAspectRatio="none">
+                <rect id="guideRect" x="30" y="15" width="65" height="70" />
             </svg>
-
-            <!-- Nhãn trạng thái định vị YOLO AI (không vẽ đè làm chậm máy) -->
-            <div id="yoloStatsBadge" class="yolo-stats-badge">⚡ YOLO AI: Đang định vị vùng...</div>
 
             <div id="headerBar">
                 <div id="headerInfo">
@@ -133,15 +129,14 @@
 
     <script src="js/firebaseConfig.js?v=4"></script>
     <script src="js/firebaseManager.js?v=4"></script>
-    <script src="js/imageProcessing.js?v=5"></script>
-    <script src="js/digitClassifier.js?v=5"></script>
-    <script src="js/yoloDetector.js?v=3"></script>
-    <script src="js/ocrParser.js?v=4"></script>
-    <script src="js/ocrEngine.js?v=9"></script>
+    <script src="js/imageProcessing.js?v=6"></script>
+    <script src="js/digitClassifier.js?v=6"></script>
+    <script src="js/ocrParser.js?v=5"></script>
+    <script src="js/ocrEngine.js?v=10"></script>
     <script src="js/csvManager.js?v=4"></script>
     <script src="js/cameraController.js?v=7"></script>
     <script src="js/dataView.js?v=4"></script>
     <script src="js/util.js?v=4"></script>
-    <script src="js/main.js?v=6"></script>
+    <script src="js/main.js?v=7"></script>
 </body>
 </html>

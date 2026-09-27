@@ -134,20 +134,27 @@ const OcrEngine = (() => {
             const totalBoxes = rowTokens.reduce((s, r) => s + r.tokens.reduce((s2, t) => s2 + t.length, 0), 0);
             if (totalBoxes > MAX_CHARS_PER_FRAME) return [];
 
-            // Gom toàn bộ ký tự của mọi dòng lại để classify 1 lần (batch).
+            // Gom toàn bộ ký tự và cluster của mọi dòng lại để classify 1 lần GPU WebGL (batch).
             const allCharImages = [];
-            // rowMeta[i] = { tokenSlots: [ [{kind:'char',batchIndex}|{kind:'dot'}, ...], ... ] }
             const rowMeta = [];
 
             for (const { rowBand, tokens } of rowTokens) {
                 const tokenSlots = [];
+                let mgmdClusterBatchIndex = null;
+
+                // Nếu dòng có token đầu tiên với >= 3 ký tự hoặc chiều rộng >= 30:
+                // Thêm 1 slot crop cluster để Model 4.0 kiểm tra xem có phải chữ MGMD không
+                if (tokens.length > 0 && tokens[0].length >= 3) {
+                    const t0 = tokens[0];
+                    const x0 = t0[0].x0;
+                    const x1 = t0[t0.length - 1].x1;
+                    if (x1 - x0 >= 30) {
+                        mgmdClusterBatchIndex = allCharImages.length;
+                        allCharImages.push(ImageProcessing.cropClusterForClassifier(grayMat, binMat, rowBand, x0, x1));
+                    }
+                }
 
                 for (const token of tokens) {
-                    // Model không có lớp dấu "." — đưa vào classifier sẽ bị đoán
-                    // nhầm thành 1 chữ số bất kỳ (đã xác nhận thực tế trên nhiều
-                    // ảnh thật: luôn lệch dấu thập phân). Nhận diện dấu chấm bằng
-                    // KÍCH THƯỚC thay vì model: dấu chấm luôn thấp hơn hẳn (~50%)
-                    // so với các ký tự số khác trong cùng token.
                     const heights = token.map((box) => {
                         const b = ImageProcessing.tightVerticalBounds(binMat, rowBand, box);
                         return b.y1 - b.y0;
@@ -156,7 +163,7 @@ const OcrEngine = (() => {
                     const medianHeight = sortedHeights[Math.floor(sortedHeights.length / 2)] || 1;
 
                     const slots = token.map((box, i) => {
-                        if (token.length > 1 && heights[i] < medianHeight * 0.5) {
+                        if (token.length > 1 && heights[i] < medianHeight * 0.45) {
                             return { kind: 'dot' };
                         }
                         const batchIndex = allCharImages.length;
@@ -165,12 +172,22 @@ const OcrEngine = (() => {
                     });
                     tokenSlots.push(slots);
                 }
-                rowMeta.push({ tokenSlots });
+                rowMeta.push({ tokenSlots, mgmdClusterBatchIndex, rowBand });
             }
 
             const classified = allCharImages.length ? await DigitClassifier.classifyBatch(allCharImages) : [];
 
-            const rows = rowMeta.map(({ tokenSlots }) => {
+            const rows = rowMeta.map(({ tokenSlots, mgmdClusterBatchIndex, rowBand }) => {
+                let isMgmd = false;
+                let mgmdConfidence = 0;
+                if (mgmdClusterBatchIndex !== null && classified[mgmdClusterBatchIndex]) {
+                    const res = classified[mgmdClusterBatchIndex];
+                    if (res.rawClass === 'mgmd' && res.confidence >= 0.70) {
+                        isMgmd = true;
+                        mgmdConfidence = res.confidence;
+                    }
+                }
+
                 const tokens = tokenSlots.map((slots) => {
                     const chars = slots.map((slot) => (slot.kind === 'dot' ? { char: '.', confidence: 1 } : classified[slot.batchIndex]));
                     const text = chars.map((c) => c.char).join('');
@@ -179,11 +196,19 @@ const OcrEngine = (() => {
                         : 0;
                     return { text, meanConfidence };
                 });
-                const text = tokens.map((t) => t.text).join('');
+                let text = tokens.map((t) => t.text).join(' ');
                 const meanConfidence = tokens.length
                     ? tokens.reduce((s, t) => s + t.meanConfidence, 0) / tokens.length
                     : 0;
-                return { text, meanConfidence, tokens };
+
+                if (isMgmd && !text.includes('MGMD')) {
+                    text = 'MGMD ' + text;
+                }
+
+                const hasDollar = text.includes('$');
+                const hasPercent = text.includes('%');
+
+                return { text, meanConfidence, tokens, isMgmd, hasDollar, hasPercent, rowBand };
             });
 
             return rows;
