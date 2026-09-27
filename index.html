@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="css/style.css?v=13" />
     <script>
         // Tự động ép xóa CacheStorage và reload nếu chưa nâng lên bản build mới nhất
-        var CURRENT_APP_VERSION = 'v23_20260928';
+        var CURRENT_APP_VERSION = 'v24_20260928';
         if (localStorage.getItem('app_build_version') !== CURRENT_APP_VERSION) {
             localStorage.setItem('app_build_version', CURRENT_APP_VERSION);
             if ('serviceWorker' in navigator) {
@@ -152,15 +152,14 @@
     <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-database-compat.js"></script>
 
     <script src="js/firebaseConfig.js?v=5"></script>
-    <script src="js/firebaseManager.js?v=22"></script>
+    <script src="js/firebaseManager.js?v=24"></script>
     <script src="js/imageProcessing.js?v=17"></script>
     <script src="js/digitClassifier.js?v=16"></script>
     <script src="js/ocrParser.js?v=18"></script>
     <script src="js/ocrEngine.js?v=18"></script>
-    <script src="js/csvManager.js?v=22"></script>
     <script src="js/cameraController.js?v=16"></script>
-    <script src="js/dataView.js?v=23"></script>
+    <script src="js/dataView.js?v=24"></script>
     <script src="js/util.js?v=6"></script>
-    <script src="js/main.js?v=22"></script>
+    <script src="js/main.js?v=24"></script>
 </body>
 </html>

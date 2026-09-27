@@ -189,13 +189,9 @@ const ScanStep = Object.freeze({
 
     // ============================== QUẢN LÝ PHIÊN ==============================
 
-    async function beginNewSession() {
-        const resumed = tryResumePendingSession();
-        if (!resumed) {
-            const fileName = await CsvManager.startNewSession();
-            tvCsvFileName.textContent = fileName;
-            scannedCount = 0;
-        }
+    function beginNewSession() {
+        scannedCount = 0;
+        tvCsvFileName.textContent = 'Đồng bộ trực tiếp Firebase';
         updateScannedCountUi();
         currentStep = ScanStep.STEP1_SCANNING;
         currentRoiBase64 = '';
@@ -205,20 +201,6 @@ const ScanStep = Object.freeze({
         postSessionPanel.hidden = true;
         btnConfirm.textContent = 'Xác nhận & Lưu máy ➔';
         updateStatusUi();
-    }
-
-    function tryResumePendingSession() {
-        const pending = CsvManager.loadPendingSession();
-        if (!pending || pending.rows.length === 0) return false;
-        const ok = confirm(
-            `Phát hiện phiên làm việc dở dang (${pending.rows.length} máy) từ file "${pending.fileName}".\n` +
-            `Bạn có muốn khôi phục và tiếp tục phiên này không?`
-        );
-        if (!ok) return false;
-        CsvManager.resumeSession(pending);
-        tvCsvFileName.textContent = pending.fileName;
-        scannedCount = pending.rows.length;
-        return true;
     }
 
     // ============================== XỬ LÝ KẾT QUẢ NHẬN DIỆN ==============================
@@ -516,14 +498,6 @@ const ScanStep = Object.freeze({
         const scanTimestamp = nowScanTime();
         const ramClearDateStr = '';
 
-        const csvRecord = {
-            machineNo: mach,
-            rtp1: r1,
-            rtp2: r2,
-            ramClearDateStr: ramClearDateStr,
-            scanTime: scanTimestamp,
-        };
-
         const fieldReading = {
             scan_time: scanTimestamp,
             scanTime: scanTimestamp,
@@ -550,18 +524,18 @@ const ScanStep = Object.freeze({
             imageBase64: currentRoiBase64 || '',
         };
 
-        const saved = await CsvManager.appendRecord(csvRecord);
-        if (saved) {
+        const ok = await FirebaseManager.pushFieldReading(fieldReading);
+        if (ok) {
             scannedCount++;
             updateScannedCountUi();
+            tvCloudStatus.textContent = '☁ Firebase: đã đồng bộ';
+            tvCloudStatus.className = 'cloud-ok';
         } else {
-            alert('Lỗi ghi file CSV — dữ liệu vẫn được giữ tạm, hãy thử [Chia sẻ file CSV] để tải về!');
+            tvCloudStatus.textContent = '⚠ Firebase lỗi kết nối';
+            tvCloudStatus.className = 'cloud-error';
+            alert('Không thể gửi dữ liệu lên Firebase! Vui lòng kiểm tra lại kết nối mạng.');
+            return;
         }
-
-        FirebaseManager.pushFieldReading(fieldReading).then((ok) => {
-            tvCloudStatus.textContent = ok ? '☁ Firebase: đã đồng bộ' : '💾 Đã lưu bộ nhớ máy (offline)';
-            tvCloudStatus.className = ok ? 'cloud-ok' : 'cloud-warn';
-        });
 
         HapticUtil.vibrateTick();
         currentRoiBase64 = '';
@@ -638,22 +612,22 @@ const ScanStep = Object.freeze({
             confirmedAt: Date.now(),
         };
 
-        const saved = await CsvManager.appendRecord(csvRecord);
-        if (saved) {
+        const ok = await FirebaseManager.pushFieldReading(fieldReading);
+        if (ok) {
             scannedCount++;
             updateScannedCountUi();
+            tvCloudStatus.textContent = '☁ Firebase: đã đồng bộ';
+            tvCloudStatus.className = 'cloud-ok';
         } else {
-            alert('Lỗi ghi file CSV — dữ liệu vẫn được giữ tạm, hãy thử [Chia sẻ file CSV] để tải về!');
+            tvCloudStatus.textContent = '⚠ Firebase lỗi kết nối';
+            tvCloudStatus.className = 'cloud-error';
+            alert('Không thể gửi dữ liệu lên Firebase! Vui lòng kiểm tra lại kết nối mạng.');
+            return;
         }
-
-        FirebaseManager.pushFieldReading(fieldReading).then((ok) => {
-            tvCloudStatus.textContent = ok ? '☁ Firebase: đã đồng bộ' : '💾 Đã lưu bộ nhớ máy (offline)';
-            tvCloudStatus.className = ok ? 'cloud-ok' : 'cloud-warn';
-        });
 
         hideBadge();
         clearAllFields();
-        btnConfirm.textContent = 'Tiếp tục quét ngày Clear RAM ➔';
+        btnConfirm.textContent = 'Xác nhận & Lưu máy ➔';
         currentStep = ScanStep.STEP1_SCANNING;
         unfreezePreview();
         updateStatusUi();
@@ -663,14 +637,12 @@ const ScanStep = Object.freeze({
 
     function confirmEndSession() {
         const ok = confirm(
-            `Bạn đã quét tổng cộng ${scannedCount} máy trong phiên này.\n` +
-            `File: ${CsvManager.getCurrentFileName()}\n\nKết thúc phiên làm việc?`
+            `Bạn đã quét tổng cộng ${scannedCount} máy trong phiên này.\nKết thúc phiên làm việc?`
         );
         if (ok) endSession();
     }
 
     function endSession() {
-        CsvManager.endSession();
         currentStep = ScanStep.SESSION_ENDED;
         OcrEngine.stopLoop();
         hideBadge();
@@ -678,17 +650,8 @@ const ScanStep = Object.freeze({
         updateStatusUi();
     }
 
-    async function onShareCsvClicked() {
-        try {
-            const result = await CsvManager.shareCsv();
-            if (result === 'downloaded') {
-                tvScanStatus.textContent = 'Đã tải file CSV xuống thư mục Downloads của trình duyệt.';
-            }
-        } catch (e) {
-            if (e.name !== 'AbortError') {
-                alert('Không thể chia sẻ file: ' + e.message);
-            }
-        }
+    function onShareCsvClicked() {
+        DataView.exportCsv();
     }
 
     // ============================== CẬP NHẬT GIAO DIỆN ==============================

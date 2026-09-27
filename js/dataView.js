@@ -362,13 +362,10 @@ const DataView = (() => {
             btnSave.disabled = true;
             btnSave.textContent = 'Đang lưu…';
 
-            // 1. Cập nhật Firebase / LocalStorage
+            // 1. Cập nhật Firebase
             await FirebaseManager.updateFieldReading(record.id, updatedFields);
 
-            // 2. Cập nhật CsvManager
-            CsvManager.updateRecord(record.machine_no, updatedFields);
-
-            // 3. Cập nhật bộ nhớ cục bộ currentRows
+            // 2. Cập nhật bộ nhớ cục bộ currentRows
             const target = currentRows.find((r) => r.id === record.id);
             if (target) {
                 Object.assign(target, updatedFields);
@@ -503,5 +500,5 @@ const DataView = (() => {
         closeModals();
     }
 
-    return { start, stop, MONTH_NAMES };
+    return { start, stop, exportCsv: exportCsvFromRows, MONTH_NAMES };
 })();
